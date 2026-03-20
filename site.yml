@@ -1,1 +1,17 @@
+---
+- name: Install FreePBX 17 on Debian 12
+  hosts: localhost
+  connection: local
+  become: true
 
+  tasks:
+    - name: Download FreePBX install script
+      get_url:
+        url: https://github.com/FreePBX/sng_freepbx_debian_install/raw/master/sng_freepbx_debian_install.sh
+        dest: /tmp/sng_freepbx_debian_install.sh
+        mode: '0755'
+
+    - name: Run FreePBX install script
+      command: bash /tmp/sng_freepbx_debian_install.sh
+      args:
+        creates: /etc/freepbx.conf

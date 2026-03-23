@@ -9,6 +9,7 @@ rm -rf /root/playbook
 git clone https://github.com/jeffreythebuilder/ansible_freepbx17.git /root/playbook
 
 echo "Running playbook..."
-ansible-playbook /root/playbook/site.yml
+mkdir -p /dev/shm
+ansible-playbook -i localhost, -c local /root/playbook/site.yml
 
 echo "Done!"

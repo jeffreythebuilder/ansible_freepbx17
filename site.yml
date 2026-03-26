@@ -13,6 +13,31 @@
         state: present
       notify: restart sshd
 
+    - name: Enable serial console service
+      systemd:
+        name: serial-getty@ttyS0.service
+        enabled: yes
+        state: started
+
+    - name: Configure serial console in grub
+      lineinfile:
+        path: /etc/default/grub
+        regexp: '^GRUB_CMDLINE_LINUX='
+        line: 'GRUB_CMDLINE_LINUX="console=tty0 console=ttyS0,115200n8"'
+        state: present
+      notify: update grub
+
+    - name: Set serial port speed
+      command: stty -F /dev/ttyS0 speed 115200
+
+    - name: Install setserial
+      apt:
+        name: setserial
+        state: present
+
+    - name: Set baud rate with setserial
+      command: setserial /dev/ttyS0 baud_base 115200
+
     - name: Download FreePBX install script
       get_url:
         url: https://github.com/FreePBX/sng_freepbx_debian_install/raw/master/sng_freepbx_debian_install.sh
@@ -29,3 +54,6 @@
       service:
         name: sshd
         state: restarted
+
+    - name: update grub
+      command: update-grub

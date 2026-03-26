@@ -9,8 +9,8 @@ Type=oneshot
 ExecStart=/bin/bash /root/bootstrap.sh
 ExecStartPost=/bin/rm -f /root/bootstrap.sh
 RemainAfterExit=yes
-StandardOutput=journal
-StandardError=journal
+StandardOutput=journal+console
+StandardError=journal+console
 
 [Install]
 WantedBy=multi-user.target

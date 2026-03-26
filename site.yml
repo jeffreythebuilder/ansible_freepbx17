@@ -19,11 +19,27 @@
         enabled: yes
         state: started
 
-    - name: Configure serial console in grub
+    - name: Configure GRUB serial console - CMDLINE_DEFAULT
       lineinfile:
         path: /etc/default/grub
-        regexp: '^GRUB_CMDLINE_LINUX='
-        line: 'GRUB_CMDLINE_LINUX="console=tty0 console=ttyS0,115200n8"'
+        regexp: '^GRUB_CMDLINE_LINUX_DEFAULT='
+        line: 'GRUB_CMDLINE_LINUX_DEFAULT="console=ttyS0,115200n8 console=tty0"'
+        state: present
+      notify: update grub
+
+    - name: Configure GRUB serial console - TERMINAL
+      lineinfile:
+        path: /etc/default/grub
+        regexp: '^#*GRUB_TERMINAL='
+        line: 'GRUB_TERMINAL="console serial"'
+        state: present
+      notify: update grub
+
+    - name: Configure GRUB serial console - SERIAL_COMMAND
+      lineinfile:
+        path: /etc/default/grub
+        regexp: '^#*GRUB_SERIAL_COMMAND='
+        line: 'GRUB_SERIAL_COMMAND="serial --speed=115200 --unit=0 --word=8 --parity=no --stop=1"'
         state: present
       notify: update grub
 

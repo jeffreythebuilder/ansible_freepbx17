@@ -5,6 +5,14 @@
   become: true
 
   tasks:
+    - name: Enable SSH root login
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#*PermitRootLogin'
+        line: 'PermitRootLogin yes'
+        state: present
+      notify: restart sshd
+
     - name: Download FreePBX install script
       get_url:
         url: https://github.com/FreePBX/sng_freepbx_debian_install/raw/master/sng_freepbx_debian_install.sh
@@ -15,3 +23,9 @@
       command: bash /tmp/sng_freepbx_debian_install.sh
       args:
         creates: /etc/freepbx.conf
+
+  handlers:
+    - name: restart sshd
+      service:
+        name: sshd
+        state: restarted

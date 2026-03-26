@@ -12,4 +12,9 @@ echo "Running playbook..."
 mkdir -p /dev/shm
 ansible-playbook -i localhost, -c local /root/playbook/site.yml
 
-echo "Done!"
+echo "Enabling SSH root login..."
+sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+systemctl restart sshd
+
+echo "Rebooting..."
+reboot

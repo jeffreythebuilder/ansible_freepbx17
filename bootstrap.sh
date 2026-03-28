@@ -1,5 +1,12 @@
 #!/bin/bash
 
+echo "Waiting for network..."
+until ping -c1 github.com &>/dev/null; do
+    echo "Network not ready, retrying in 5 seconds..."
+    sleep 5
+done
+echo "Network is up!"
+
 echo "Installing dependencies..."
 apt-get update -y
 apt-get install -y ansible git

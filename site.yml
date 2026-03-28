@@ -54,6 +54,11 @@
     - name: Set baud rate with setserial
       command: setserial /dev/ttyS0 baud_base 115200
 
+    - name: Install dnsmasq
+      apt:
+        name: dnsmasq
+        state: present
+
     - name: Download FreePBX install script
       get_url:
         url: https://github.com/FreePBX/sng_freepbx_debian_install/raw/master/sng_freepbx_debian_install.sh
@@ -64,6 +69,7 @@
       command: bash /tmp/sng_freepbx_debian_install.sh
       args:
         creates: /etc/freepbx.conf
+
 
   handlers:
     - name: restart sshd

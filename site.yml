@@ -70,6 +70,13 @@
       args:
         creates: /etc/freepbx.conf
 
+    - name: Download and install certman module
+      command: fwconsole ma downloadinstall certman --force
+      ignore_errors: yes
+
+    - name: Reload FreePBX and fix permissions
+      shell: fwconsole reload && fwconsole chown
+      ignore_errors: yes
 
   handlers:
     - name: restart sshd

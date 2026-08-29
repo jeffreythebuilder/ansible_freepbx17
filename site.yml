@@ -59,6 +59,15 @@
         name: dnsmasq
         state: present
 
+        
+    - name: Configure chrony to allow NTP clients
+      lineinfile:
+        path: /etc/chrony/chrony.conf
+        regexp: '^#?allow'
+        line: 'allow'
+        state: present
+      notify: restart chrony
+
     - name: Download FreePBX install script
       get_url:
         url: https://github.com/FreePBX/sng_freepbx_debian_install/raw/master/sng_freepbx_debian_install.sh

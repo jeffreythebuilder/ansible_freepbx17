@@ -95,3 +95,9 @@
 
     - name: update grub
       command: update-grub
+
+
+    - name: restart chrony
+      service:
+        name: chrony
+        state: restarted

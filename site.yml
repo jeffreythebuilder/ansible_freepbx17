@@ -59,14 +59,18 @@
         name: dnsmasq
         state: present
 
-        
+    - name: Install chrony
+     apt:
+       name: chrony
+       state: present
+       update_cache: yes
+
     - name: Configure chrony to allow NTP clients
-      lineinfile:
-        path: /etc/chrony/chrony.conf
-        regexp: '^#?allow'
-        line: 'allow'
-        state: present
-      notify: restart chrony
+     lineinfile:
+      path: /etc/chrony/chrony.conf
+      regexp: '^#?allow'
+      line: allow
+      create: yes   # optional safety net even after installing the package
 
     - name: Download FreePBX install script
       get_url:

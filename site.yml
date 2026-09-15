@@ -60,17 +60,18 @@
         state: present
 
     - name: Install chrony
-     apt:
-       name: chrony
-       state: present
-       update_cache: yes
+      apt:
+        name: chrony
+        state: present
+        update_cache: yes
 
     - name: Configure chrony to allow NTP clients
-     lineinfile:
-      path: /etc/chrony/chrony.conf
-      regexp: '^#?allow'
-      line: allow
-      create: yes   # optional safety net even after installing the package
+      lineinfile:
+        path: /etc/chrony/chrony.conf
+        regexp: '^#?allow'
+        line: allow
+        create: yes
+      notify: restart chrony
 
     - name: Download FreePBX install script
       get_url:
@@ -99,7 +100,6 @@
 
     - name: update grub
       command: update-grub
-
 
     - name: restart chrony
       service:

@@ -83,6 +83,30 @@
       command: bash /tmp/sng_freepbx_debian_install.sh
       args:
         creates: /etc/freepbx.conf
+        
+    - name: Add custom PSTN dialplan (from-pstn-sg)
+      blockinfile:
+        path: /etc/asterisk/extensions_custom.conf
+        create: yes
+        owner: asterisk
+        group: asterisk
+        mode: '0644'
+        marker: "; {mark} ANSIBLE MANAGED BLOCK - from-pstn-sg"
+        block: |
+          [from-pstn-sg]
+          exten => _.,1,NoOp(Attempting to extract DID from SIP To header)
+          exten => _.,n,GotoIf($["${CHANNEL(channeltype)}"="SIP"]?SIP)
+          exten => _.,n,GotoIf($["${CHANNEL(channeltype)}"="PJSIP"]?PJSIP)
+          exten => _.,n,NoOp(Unable to determine SIP channel type)
+          exten => _.,n,Goto(from-pstn,${EXTEN},1)
+          exten => _.,n(SIP),Set(DID=${CUT(CUT(SIP_HEADER(To),@,1),:,2)})
+          exten => _.,n(PJSIP),Set(DID=${CUT(CUT(PJSIP_HEADER(read,To),@,1),:,2)})
+          exten => _.,n,NoOp(Processing Caller ID and DID)
+          exten => _.,n,ExecIf($["${CALLERID(name):0:3}" = "+65"]?Set(CALLERID(name)=${CALLERID(name):3}))
+          exten => _.,n,ExecIf($["${CALLERID(num):0:3}" = "+65"]?Set(CALLERID(num)=${CALLERID(num):3}))
+          exten => _.,n,ExecIf($["${DID:0:3}" = "+65"]?Set(DID=${DID:3}))  ; Strip "+65"
+          exten => _.,n,ExecIf($["${DID:0:2}" = "65"]?Set(DID=${DID:2}))  ; Remove "65" prefix from DID
+          exten => _.,n,Goto(from-pstn,${DID},1)
 
     - name: Download and install certman module
       command: fwconsole ma downloadinstall certman --force

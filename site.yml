@@ -4,14 +4,6 @@
   connection: local
   become: true
 
-  vars:
-    # Pin this to a commit or branch in production. "main" tracks the latest
-    # published Provisioner build and is convenient for a fresh installation.
-    provisioner_repo: https://github.com/jeffreythebuilder/provisioner.git
-    provisioner_version: main
-    provisioner_source: /usr/local/src/provisioner
-    provisioner_module_dir: /var/www/html/admin/modules/provisioner
-
   tasks:
     - name: Enable SSH root login
       lineinfile:
@@ -91,32 +83,6 @@
       command: bash /tmp/sng_freepbx_debian_install.sh
       args:
         creates: /etc/freepbx.conf
-
-    - name: Check out Provisioner source
-      ansible.builtin.git:
-        repo: "{{ provisioner_repo }}"
-        dest: "{{ provisioner_source }}"
-        version: "{{ provisioner_version }}"
-        force: true
-        update: true
-
-    - name: Install Provisioner module files
-      ansible.builtin.copy:
-        src: "{{ provisioner_source }}/"
-        dest: "{{ provisioner_module_dir }}/"
-        remote_src: true
-        owner: asterisk
-        group: asterisk
-        mode: preserve
-
-    - name: Install or upgrade Provisioner in FreePBX
-      ansible.builtin.command: fwconsole ma install provisioner --force
-      register: provisioner_install
-      changed_when: >-
-        provisioner_install.rc == 0 and
-        ('successfully installed' in (provisioner_install.stdout | lower) or
-         'successfully updated' in (provisioner_install.stdout | lower) or
-         'successfully upgraded' in (provisioner_install.stdout | lower))
         
     - name: Add custom PSTN dialplan (from-pstn-sg)
       blockinfile:
@@ -140,49 +106,7 @@
           exten => _.,n,ExecIf($["${CALLERID(num):0:3}" = "+65"]?Set(CALLERID(num)=${CALLERID(num):3}))
           exten => _.,n,ExecIf($["${DID:0:3}" = "+65"]?Set(DID=${DID:3}))  ; Strip "+65"
           exten => _.,n,ExecIf($["${DID:0:2}" = "65"]?Set(DID=${DID:2}))  ; Remove "65" prefix from DID
-           exten => _.,n,Goto(from-pstn,${DID},1)
-
-    - name: Add trunk 4 forwarded-call caller ID dialplan
-      ansible.builtin.blockinfile:
-        path: /etc/asterisk/extensions_custom.conf
-        create: true
-        owner: asterisk
-        group: asterisk
-        mode: '0644'
-        marker: "; {mark} ANSIBLE MANAGED BLOCK - macro-dialout-trunk-predial-hook"
-        block: |
-          [macro-dialout-trunk-predial-hook]
-          exten => s,1,GotoIf($["${DIAL_TRUNK}"!="4"]?done)
-          same => n,GotoIf($["${BLINDTRANSFER}"=""]?forward)
-          same => n,Set(XFER_CID_DEVICE=${CUT(BLINDTRANSFER,/,2)})
-          same => n,Set(XFER_CID_DEVICE=${CUT(XFER_CID_DEVICE,-,1)})
-          same => n,Set(XFER_CID_USER=${DB(DEVICE/${XFER_CID_DEVICE}/user)})
-          same => n,ExecIf($["${XFER_CID_USER}"=""]?Set(XFER_CID_USER=${XFER_CID_DEVICE}))
-          same => n,Goto(cid)
-          same => n(forward),GotoIf($["${DIVERSION_REASON}"!="unconditional" | "${CHANNEL(channeltype)}"!="Local" | "${EXTTOCALL}"=""]?done)
-          same => n,GotoIf($["${DB(CF/${EXTTOCALL})}"!="${DIAL_NUMBER}"]?done)
-          same => n,Set(XFER_CID_USER=${EXTTOCALL})
-          same => n(cid),Set(XFER_CID_NUMBER=${DB(AMPUSER/${XFER_CID_USER}/outboundcid)})
-          same => n,GotoIf($[${REGEX("^([0-9]{8}|65[0-9]{8}|[+]65[0-9]{8})$" ${XFER_CID_NUMBER})}=0]?invalid)
-          same => n,Set(XFER_CID_NUMBER=${FILTER(0-9,${XFER_CID_NUMBER})})
-          same => n,ExecIf($[${LEN(${XFER_CID_NUMBER})}=8]?Set(XFER_CID_NUMBER=65${XFER_CID_NUMBER}))
-          same => n,GotoIf($["${BLINDTRANSFER}"=""]?identity)
-          same => n,Set(XFER_ENDPOINT=${OUT_${DIAL_TRUNK}_SUFFIX:1})
-          same => n,Set(XFER_AOR=${PJSIP_ENDPOINT(${XFER_ENDPOINT},aors)})
-          same => n,Set(XFER_CONTACT=${PJSIP_AOR(${XFER_AOR},contact)})
-          same => n,GotoIf($[${REGEX("," ${XFER_AOR}${XFER_CONTACT})}=1 | "${XFER_CONTACT}"=""]?invalid)
-          same => n,Set(XFER_URI=${PJSIP_CONTACT(${XFER_CONTACT},uri)})
-          same => n,GotoIf($[${REGEX("^sip:[A-Za-z0-9_.-]+@[0-9.]+(:[0-9]+)?$" ${XFER_URI})}=0]?invalid)
-          same => n,Gosub(func-set-sipheader,s,1(Referred-By,<${CUT(XFER_URI,:,1-2)}>))
-          same => n(identity),Set(CALLERID(num)=${XFER_CID_NUMBER})
-          same => n,Set(CALLERID(name)=${XFER_CID_NUMBER})
-          same => n,Set(CDR(outbound_cnum)=${XFER_CID_NUMBER})
-          same => n,Set(CDR(outbound_cnam)=${XFER_CID_NUMBER})
-          same => n,ExecIf($[${REGEX("^[0-9]{8}$" ${OUTNUM})}=1]?Set(OUTNUM=+65${OUTNUM}))
-          same => n,Set(PREDIAL_HOOK_RET=)
-          same => n,Goto(done)
-          same => n(invalid),Set(PREDIAL_HOOK_RET=BYPASS)
-          same => n(done),MacroExit()
+          exten => _.,n,Goto(from-pstn,${DID},1)
 
     - name: Download and install certman module
       command: fwconsole ma downloadinstall certman --force

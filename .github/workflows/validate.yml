@@ -1,0 +1,42 @@
+name: Validate deployment
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Ubuntu is only the CI host: it provides a packaged Asterisk for tests.
+  # Production targets remain Debian 12; these are not full OS install tests.
+  static:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          python3 -m pip install 'ansible-core==2.14.18' 'PyYAML==6.0.3'
+      - name: Check Bash
+        run: |
+          bash -n bootstrap.sh scripts/install-monitor.sh
+          sh -n monitor/freepbx-install-status
+          sh -n monitor/freepbx-install-notice.sh
+          shellcheck bootstrap.sh scripts/install-monitor.sh monitor/freepbx-install-status monitor/freepbx-install-notice.sh
+      - name: Check Ansible
+        run: ansible-playbook -i localhost, -c local site.yml --syntax-check
+      - name: Run regression tests
+        run: python3 -m unittest discover -s tests -v
+  dialplan:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install test Asterisk
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y asterisk
+          sudo systemctl stop asterisk
+      - name: Exercise actual dialplan functions and routing
+        run: sudo python3 tests/asterisk_integration.py

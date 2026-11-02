@@ -1,0 +1,40 @@
+---
+- name: Create GRUB drop-in directory
+  ansible.builtin.file:
+    path: /etc/default/grub.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Configure GRUB serial console without replacing existing kernel parameters
+  ansible.builtin.copy:
+    dest: /etc/default/grub.d/99-freepbx-serial.cfg
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Preserve existing parameters; the final console is the primary console.
+      GRUB_CMDLINE_LINUX_DEFAULT="${GRUB_CMDLINE_LINUX_DEFAULT} console=tty0 console=ttyS0,115200n8"
+      GRUB_TERMINAL="console serial"
+      GRUB_SERIAL_COMMAND="serial --speed=115200 --unit=0 --word=8 --parity=no --stop=1"
+  notify: update grub
+
+- name: Set running serial port speed
+  ansible.builtin.command: stty -F /dev/ttyS0 speed 115200
+  changed_when: false
+
+- name: Install setserial
+  ansible.builtin.apt:
+    name: setserial
+    state: present
+
+- name: Set serial UART baud base
+  ansible.builtin.command: setserial /dev/ttyS0 baud_base 115200
+  changed_when: false
+
+- name: Enable serial login console
+  ansible.builtin.systemd:
+    name: serial-getty@ttyS0.service
+    enabled: true
+    state: started

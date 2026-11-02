@@ -3,14 +3,21 @@ Description=FreePBX First Boot Install
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/root/bootstrap.sh
+ConditionPathExists=!/var/lib/freepbx-install/complete
 
 [Service]
 Type=oneshot
+EnvironmentFile=-/etc/default/freepbx-install
 ExecStart=/bin/bash /root/bootstrap.sh
-ExecStartPost=/bin/rm -f /root/bootstrap.sh
+# Only runs after a successful bootstrap. Queue, rather than wait for, reboot.
+ExecStartPost=/usr/bin/systemctl --no-block reboot
+ExecStopPost=/usr/local/sbin/freepbx-install-status --service-result ${SERVICE_RESULT}
+TimeoutStartSec=infinity
 RemainAfterExit=yes
-StandardOutput=journal+console
-StandardError=journal+console
+# Bootstrap mirrors the saved logs explicitly to tty0 AND ttyS0. Sending to
+# /dev/console here too would duplicate output on the primary (serial) console.
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

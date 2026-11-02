@@ -1,0 +1,109 @@
+---
+- name: Inspect installer completion record
+  ansible.builtin.stat:
+    path: /var/lib/freepbx-install/upstream-complete
+  register: upstream_complete
+
+- name: Inspect previous installer attempt
+  ansible.builtin.stat:
+    path: /var/lib/freepbx-install/upstream-started
+  register: upstream_started
+
+- name: Inspect existing FreePBX configuration
+  ansible.builtin.stat:
+    path: /etc/freepbx.conf
+  register: freepbx_config
+
+- name: Refuse to silently skip or overwrite an unverified installation
+  ansible.builtin.assert:
+    that:
+      - >-
+        upstream_complete.stat.exists or
+        (not upstream_started.stat.exists and not freepbx_config.stat.exists) or
+        resume_partial_install | bool
+    fail_msg: >-
+      An existing or partial installation has no verified completion record.
+      Inspect /var/log/pbx and restore a fresh snapshot if possible. Only after
+      investigation, set resume_partial_install=true to explicitly rerun upstream.
+
+- name: Run upstream installer on a new or explicitly resumed installation
+  when: not upstream_complete.stat.exists
+  block:
+    - name: Validate pinned installer identity
+      ansible.builtin.assert:
+        that:
+          - freepbx_installer_commit is match('^[0-9a-f]{40}$')
+          - freepbx_installer_sha256 is match('^[0-9a-f]{64}$')
+
+    - name: Download checksum-verified FreePBX installer
+      ansible.builtin.get_url:
+        url: "https://raw.githubusercontent.com/FreePBX/sng_freepbx_debian_install/{{ freepbx_installer_commit }}/sng_freepbx_debian_install.sh"
+        dest: /var/lib/freepbx-install/sng_freepbx_debian_install.sh
+        checksum: "sha256:{{ freepbx_installer_sha256 }}"
+        owner: root
+        group: root
+        mode: '0700'
+        timeout: 30
+      register: installer_download
+      retries: 5
+      delay: 5
+      until: installer_download is succeeded
+
+    - name: Configure short network retries for this installer only
+      ansible.builtin.copy:
+        dest: "/var/lib/freepbx-install/{{ item.name }}"
+        content: "{{ item.content }}"
+        owner: root
+        group: root
+        mode: '0600'
+      loop:
+        - name: apt-network.conf
+          content: |
+            Acquire::Retries "3";
+            Acquire::http::Timeout "30";
+            Acquire::https::Timeout "30";
+            APT::Update::Error-Mode "any";
+        - name: wget-network.conf
+          content: |
+            dns_timeout = 10
+            connect_timeout = 10
+            read_timeout = 30
+            tries = 3
+            waitretry = 5
+            retry_connrefused = on
+
+    - name: Record installer attempt before it changes the machine
+      ansible.builtin.copy:
+        dest: /var/lib/freepbx-install/upstream-started
+        content: "{{ freepbx_installer_commit }}\n"
+        owner: root
+        group: root
+        mode: '0600'
+
+    # --skipversion is safe here because get_url checks the pinned SHA256.
+    # Otherwise upstream can exit 0 without installing when master changes.
+    - name: Run pinned FreePBX installer
+      ansible.builtin.command:
+        argv:
+          - bash
+          - /var/lib/freepbx-install/sng_freepbx_debian_install.sh
+          - --skipversion
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+        APT_CONFIG: /var/lib/freepbx-install/apt-network.conf
+        WGETRC: /var/lib/freepbx-install/wget-network.conf
+
+    - name: Verify upstream installation before recording completion
+      ansible.builtin.import_tasks: health.yml
+
+    - name: Verify the FreePBX CLI can load the installed system
+      ansible.builtin.command: fwconsole reload
+      changed_when: false
+
+    - name: Record verified upstream installer completion
+      ansible.builtin.copy:
+        dest: /var/lib/freepbx-install/upstream-complete
+        content: "{{ freepbx_installer_commit }}\n"
+        owner: root
+        group: root
+        mode: '0600'

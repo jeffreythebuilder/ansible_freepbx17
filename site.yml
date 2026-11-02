@@ -3,129 +3,113 @@
   hosts: localhost
   connection: local
   become: true
+  environment:
+    LC_ALL: C
+    DEBIAN_FRONTEND: noninteractive
+
+  vars_files:
+    - defaults.yml
+
+  pre_tasks:
+    - name: Require active monitoring before making installation changes
+      ansible.builtin.assert:
+        that:
+          - ansible_check_mode or lookup('ansible.builtin.env', 'FREEPBX_MONITOR_ACTIVE') == '1'
+        fail_msg: Monitoring callback is unavailable; run from the reviewed checkout with its ansible.cfg.
+
+    - name: Install default installation monitoring
+      ansible.builtin.import_tasks: tasks/monitor.yml
+
+    - name: Check supported platform
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == 'Debian'
+          - ansible_distribution_major_version == '12'
+          - ansible_architecture == 'x86_64'
+          - ansible_service_mgr == 'systemd'
+          - ansible_virtualization_type not in ['docker', 'lxc', 'podman', 'container']
+        fail_msg: Use a fresh Debian 12 amd64 machine or full VM with systemd, not a container.
+
+    - name: Check hostname resolution required by the upstream installer
+      ansible.builtin.command: hostname -f
+      changed_when: false
+
+    - name: Check mandatory serial-console prerequisites before installing FreePBX
+      ansible.builtin.import_tasks: tasks/serial-preflight.yml
 
   tasks:
-    - name: Enable SSH root login
-      lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^#*PermitRootLogin'
-        line: 'PermitRootLogin yes'
-        state: present
-      notify: restart sshd
+    - name: Create private installation state directory
+      ansible.builtin.file:
+        path: /var/lib/freepbx-install
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
 
-    - name: Enable serial console service
-      systemd:
-        name: serial-getty@ttyS0.service
-        enabled: yes
-        state: started
+    - name: Install and validate FreePBX
+      ansible.builtin.import_tasks: tasks/install.yml
 
-    - name: Configure GRUB serial console - CMDLINE_DEFAULT
-      lineinfile:
-        path: /etc/default/grub
-        regexp: '^GRUB_CMDLINE_LINUX_DEFAULT='
-        line: 'GRUB_CMDLINE_LINUX_DEFAULT="console=ttyS0,115200n8 console=tty0"'
-        state: present
-      notify: update grub
+    - name: Enable root password SSH access
+      ansible.builtin.import_tasks: tasks/ssh.yml
 
-    - name: Configure GRUB serial console - TERMINAL
-      lineinfile:
-        path: /etc/default/grub
-        regexp: '^#*GRUB_TERMINAL='
-        line: 'GRUB_TERMINAL="console serial"'
-        state: present
-      notify: update grub
-
-    - name: Configure GRUB serial console - SERIAL_COMMAND
-      lineinfile:
-        path: /etc/default/grub
-        regexp: '^#*GRUB_SERIAL_COMMAND='
-        line: 'GRUB_SERIAL_COMMAND="serial --speed=115200 --unit=0 --word=8 --parity=no --stop=1"'
-        state: present
-      notify: update grub
-
-    - name: Set serial port speed
-      command: stty -F /dev/ttyS0 speed 115200
-
-    - name: Install setserial
-      apt:
-        name: setserial
-        state: present
-
-    - name: Set baud rate with setserial
-      command: setserial /dev/ttyS0 baud_base 115200
+    - name: Configure mandatory serial console
+      ansible.builtin.import_tasks: tasks/serial.yml
 
     - name: Install dnsmasq
-      apt:
+      ansible.builtin.apt:
         name: dnsmasq
         state: present
 
-    - name: Install chrony
-      apt:
-        name: chrony
-        state: present
-        update_cache: yes
-
-    - name: Configure chrony to allow NTP clients
-      lineinfile:
+    - name: Preserve unrestricted NTP serving as intended for this appliance
+      ansible.builtin.blockinfile:
         path: /etc/chrony/chrony.conf
-        regexp: '^#?allow'
-        line: allow
-        create: yes
+        insertafter: EOF
+        marker: '# {mark} ANSIBLE MANAGED NTP CLIENT ACCESS'
+        block: |
+          port 123
+          allow
       notify: restart chrony
 
-    - name: Download FreePBX install script
-      get_url:
-        url: https://github.com/FreePBX/sng_freepbx_debian_install/raw/master/sng_freepbx_debian_install.sh
-        dest: /tmp/sng_freepbx_debian_install.sh
-        mode: '0755'
-
-    - name: Run FreePBX install script
-      command: bash /tmp/sng_freepbx_debian_install.sh
-      args:
-        creates: /etc/freepbx.conf
-        
     - name: Add custom PSTN dialplan (from-pstn-sg)
-      blockinfile:
+      ansible.builtin.blockinfile:
         path: /etc/asterisk/extensions_custom.conf
-        create: yes
+        create: true
         owner: asterisk
         group: asterisk
         mode: '0644'
-        marker: "; {mark} ANSIBLE MANAGED BLOCK - from-pstn-sg"
-        block: |
-          [from-pstn-sg]
-          exten => _.,1,NoOp(Attempting to extract DID from SIP To header)
-          exten => _.,n,GotoIf($["${CHANNEL(channeltype)}"="SIP"]?SIP)
-          exten => _.,n,GotoIf($["${CHANNEL(channeltype)}"="PJSIP"]?PJSIP)
-          exten => _.,n,NoOp(Unable to determine SIP channel type)
-          exten => _.,n,Goto(from-pstn,${EXTEN},1)
-          exten => _.,n(SIP),Set(DID=${CUT(CUT(SIP_HEADER(To),@,1),:,2)})
-          exten => _.,n(PJSIP),Set(DID=${CUT(CUT(PJSIP_HEADER(read,To),@,1),:,2)})
-          exten => _.,n,NoOp(Processing Caller ID and DID)
-          exten => _.,n,ExecIf($["${CALLERID(name):0:3}" = "+65"]?Set(CALLERID(name)=${CALLERID(name):3}))
-          exten => _.,n,ExecIf($["${CALLERID(num):0:3}" = "+65"]?Set(CALLERID(num)=${CALLERID(num):3}))
-          exten => _.,n,ExecIf($["${DID:0:3}" = "+65"]?Set(DID=${DID:3}))  ; Strip "+65"
-          exten => _.,n,ExecIf($["${DID:0:2}" = "65"]?Set(DID=${DID:2}))  ; Remove "65" prefix from DID
-          exten => _.,n,Goto(from-pstn,${DID},1)
+        marker: '; {mark} ANSIBLE MANAGED BLOCK - from-pstn-sg'
+        block: "{{ lookup('ansible.builtin.file', 'files/from-pstn-sg.conf') }}"
 
-    - name: Download and install certman module
-      command: fwconsole ma downloadinstall certman --force
-      ignore_errors: yes
+    - name: Download and force-install certman as in the original deployment
+      ansible.builtin.command: fwconsole ma downloadinstall certman --force --autoenable --no-interaction
 
-    - name: Reload FreePBX and fix permissions
-      shell: fwconsole reload && fwconsole chown
-      ignore_errors: yes
+    - name: Fix FreePBX permissions
+      ansible.builtin.command: fwconsole chown
+      changed_when: false
+
+    - name: Reload FreePBX and fail on configuration errors
+      ansible.builtin.command: fwconsole reload
+      changed_when: false
+
+    - name: Apply service and bootloader changes before final checks
+      ansible.builtin.meta: flush_handlers
+
+    - name: Verify core services and loaded dialplan
+      ansible.builtin.import_tasks: tasks/health.yml
+      vars:
+        check_custom_dialplan: true
+        required_freepbx_modules: [framework, core, certman]
 
   handlers:
-    - name: restart sshd
-      service:
-        name: sshd
-        state: restarted
+    - name: reload ssh
+      ansible.builtin.service:
+        name: ssh
+        state: reloaded
 
     - name: update grub
-      command: update-grub
+      ansible.builtin.command: update-grub
 
     - name: restart chrony
-      service:
+      ansible.builtin.service:
         name: chrony
         state: restarted

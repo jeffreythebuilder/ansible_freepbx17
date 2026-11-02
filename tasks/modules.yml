@@ -1,0 +1,23 @@
+---
+- name: Read module status as JSON records
+  ansible.builtin.command: fwconsole ma list --format=json
+  register: freepbx_modules
+  changed_when: false
+
+# FreePBX emits newline-delimited JSON messages followed by a data array,
+# not a single JSON object keyed by module name.
+- name: Parse module status records
+  ansible.builtin.set_fact:
+    freepbx_module_records: "{{ freepbx_modules.stdout_lines | map('from_json') | list }}"
+
+- name: Reject module administration errors even if the CLI returned zero
+  ansible.builtin.assert:
+    that:
+      - freepbx_module_records | length > 0
+      - freepbx_module_records | selectattr('status', 'equalto', false) | list | length == 0
+      - (freepbx_module_records | last)['data'] is sequence
+      - (freepbx_module_records | last)['data'] is not string
+
+- name: Extract module status rows
+  ansible.builtin.set_fact:
+    freepbx_module_rows: "{{ (freepbx_module_records | last)['data'] }}"

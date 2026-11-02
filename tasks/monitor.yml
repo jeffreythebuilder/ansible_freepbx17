@@ -1,0 +1,4 @@
+---
+- name: Install persistent status command and root SSH login notice
+  ansible.builtin.command: bash {{ playbook_dir | quote }}/scripts/install-monitor.sh
+  changed_when: false

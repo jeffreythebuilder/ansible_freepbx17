@@ -1,0 +1,20 @@
+---
+- name: Exercise the actual monitoring callback without changing the host
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Exercise private output
+      ansible.builtin.debug:
+        msg: MONITOR_TEST_SECRET_MUST_NOT_APPEAR
+      no_log: true
+
+    - name: Exercise monitored failure
+      ansible.builtin.fail:
+        msg: deliberate monitor smoke failure
+      when: fail_monitor_smoke | default(false) | bool
+      no_log: "{{ hide_monitor_failure | default(false) | bool }}"
+
+    - name: Finish monitored smoke test
+      ansible.builtin.debug:
+        msg: Monitor smoke test completed

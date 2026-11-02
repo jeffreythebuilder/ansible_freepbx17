@@ -49,6 +49,29 @@
       delay: 5
       until: installer_download is succeeded
 
+    - name: Configure short network retries for this installer only
+      ansible.builtin.copy:
+        dest: "/var/lib/freepbx-install/{{ item.name }}"
+        content: "{{ item.content }}"
+        owner: root
+        group: root
+        mode: '0600'
+      loop:
+        - name: apt-network.conf
+          content: |
+            Acquire::Retries "3";
+            Acquire::http::Timeout "30";
+            Acquire::https::Timeout "30";
+            APT::Update::Error-Mode "any";
+        - name: wget-network.conf
+          content: |
+            dns_timeout = 10
+            connect_timeout = 10
+            read_timeout = 30
+            tries = 3
+            waitretry = 5
+            retry_connrefused = on
+
     - name: Record installer attempt before it changes the machine
       ansible.builtin.copy:
         dest: /var/lib/freepbx-install/upstream-started
@@ -67,6 +90,8 @@
           - --skipversion
       environment:
         DEBIAN_FRONTEND: noninteractive
+        APT_CONFIG: /var/lib/freepbx-install/apt-network.conf
+        WGETRC: /var/lib/freepbx-install/wget-network.conf
 
     - name: Verify upstream installation before recording completion
       ansible.builtin.import_tasks: health.yml

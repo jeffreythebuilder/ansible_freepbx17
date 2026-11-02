@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 import tempfile
 import time
@@ -33,6 +34,72 @@ def process_identity(pid):
         return boot, fields[19]
     except (OSError, ValueError, TypeError, IndexError):
         return '', ''
+
+
+class ConsoleMirror:
+    """Bounded, nonblocking fan-out: a dead serial receiver cannot stall setup."""
+
+    def __init__(self, warning, devices=('/dev/tty0', '/dev/ttyS0'), capacity=262144):
+        self.warning = warning
+        self.devices = devices
+        self.capacity = capacity
+        self.outputs = {}
+        self.pending = {device: bytearray() for device in devices}
+        self.warned = set()
+
+    def warn_once(self, device, reason):
+        if device not in self.warned:
+            self.warned.add(device)
+            self.warning(f'Console mirror {device}: {reason}; full output remains in the installation logs.')
+
+    def write(self, text):
+        data = text.encode('utf-8', errors='replace')
+        for device in self.devices:
+            queue = self.pending[device]
+            queue.extend(data)
+            if len(queue) > self.capacity:
+                del queue[:-self.capacity]
+                self.warn_once(device, 'display is too slow; older console output was dropped')
+        self.flush()
+
+    def flush(self):
+        for device in self.devices:
+            descriptor = self.outputs.get(device)
+            if descriptor is None:
+                try:
+                    descriptor = os.open(device, os.O_WRONLY | os.O_NONBLOCK | os.O_NOCTTY)
+                    if not stat.S_ISCHR(os.fstat(descriptor).st_mode):
+                        os.close(descriptor)
+                        raise OSError('not a character device')
+                    self.outputs[device] = descriptor
+                except OSError as error:
+                    self.pending[device].clear()
+                    self.warn_once(device, clean(error))
+                    continue
+            queue = self.pending[device]
+            while queue:
+                try:
+                    written = os.write(descriptor, queue)
+                    if not written:
+                        break
+                    del queue[:written]
+                except BlockingIOError:
+                    break
+                except OSError as error:
+                    self.warn_once(device, clean(error))
+                    os.close(descriptor)
+                    self.outputs.pop(device, None)
+                    queue.clear()
+                    break
+
+    def close(self):
+        # Keep shutdown bounded even if serial flow control is holding a port.
+        deadline = time.monotonic() + 1
+        while any(self.pending.values()) and time.monotonic() < deadline:
+            self.flush()
+            time.sleep(0.05)
+        for descriptor in self.outputs.values():
+            os.close(descriptor)
 
 
 class Monitor:
@@ -83,7 +150,7 @@ class Monitor:
                 os.unlink(temporary)
         return data
 
-    def begin(self, pid, source, revision=''):
+    def begin(self, pid, source, revision='', log_offset=0):
         with self.locked():
             previous = self.read()
             if self.is_alive(previous):
@@ -93,7 +160,7 @@ class Monitor:
                                     started_at=timestamp(), finished_at='', pid=int(pid),
                                     boot_id=boot, start_ticks=ticks, source=source,
                                     revision=clean(revision), last_error='', exit_code=None,
-                                    playbook_result=''))
+                                    playbook_result='', log_offset=int(log_offset)))
 
     def update(self, **changes):
         with self.locked():
@@ -141,13 +208,14 @@ class Monitor:
         except (OSError, ValueError):
             return None
 
-    def follow(self):
+    def follow(self, emit=None, stop=None, from_start=False, tick=None):
         """Discover the upstream log even when --follow starts before installation.
 
         File identity/size checks also handle copytruncate and renamed logs.
         This reader never signals or otherwise controls the installation.
         """
         readers = {}
+        emit = emit or (lambda text: print(text, end='', flush=True))
         try:
             while True:
                 upstream = self.upstream_log(self.read().get('started_at'))
@@ -161,23 +229,40 @@ class Monitor:
                                 reader.close()
                             reader = path.open(errors='replace')
                             readers[path] = reader
-                            print(f'\n==> {path} <==', flush=True)
+                            emit(f'\n==> {path} <==\n')
                             # Start near the end on attach; subsequent reads are live.
-                            reader.seek(max(0, metadata.st_size - 16000))
+                            offset = self.read().get('log_offset', 0) if path == self.log_path else 0
+                            reader.seek(min(metadata.st_size, offset) if from_start else max(0, metadata.st_size - 16000))
                         if reader.tell() > metadata.st_size:
                             reader.seek(0)
                         chunk = reader.read(65536)
                         if chunk:
-                            print(chunk, end='', flush=True)
+                            emit(chunk)
                     except FileNotFoundError:
                         continue
                 for path in list(readers):
                     if path not in paths:
                         readers.pop(path).close()
-                time.sleep(0.5)
+                if tick:
+                    tick()
+                if stop and stop():
+                    # Drain the remaining finite snapshot before closing viewers.
+                    for reader in readers.values():
+                        emit(reader.read(1048576))
+                    return
+                time.sleep(0.1 if from_start else 0.5)
         finally:
             for reader in readers.values():
                 reader.close()
+
+    def mirror_consoles(self):
+        owner = self.read()
+        mirror = ConsoleMirror(self.append_log)
+        try:
+            self.follow(emit=mirror.write, from_start=True, tick=mirror.flush,
+                        stop=lambda: (self.directory / 'console-stop').exists() or not self.is_alive(owner))
+        finally:
+            mirror.close()
 
 
 def display(monitor, data, notice=False):
@@ -213,10 +298,12 @@ def main(argv=None):
     modes.add_argument('--finish', choices=['completed', 'failed'], help=argparse.SUPPRESS)
     modes.add_argument('--service-result', help=argparse.SUPPRESS)
     modes.add_argument('--verify-playbook', action='store_true', help=argparse.SUPPRESS)
+    modes.add_argument('--mirror-consoles', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--source', default='bootstrap', help=argparse.SUPPRESS)
     parser.add_argument('--revision', default='', help=argparse.SUPPRESS)
     parser.add_argument('--message', default='', help=argparse.SUPPRESS)
     parser.add_argument('--exit-code', type=int, default=0, help=argparse.SUPPRESS)
+    parser.add_argument('--log-offset', type=int, default=0, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if getattr(os, 'geteuid', lambda: -1)() != 0:
         if args.notice:
@@ -224,7 +311,7 @@ def main(argv=None):
         parser.exit(1, 'Run as root or use sudo freepbx-install-status.\n')
     monitor = Monitor()
     if args.begin is not None:
-        monitor.begin(args.begin, args.source, args.revision)
+        monitor.begin(args.begin, args.source, args.revision, args.log_offset)
     elif args.stage:
         monitor.update(stage=clean(args.stage), task='')
         monitor.append_log(f'STAGE: {clean(args.stage)}')
@@ -236,6 +323,8 @@ def main(argv=None):
     elif args.verify_playbook:
         if monitor.read().get('playbook_result') != 'completed':
             raise RuntimeError('Ansible did not report monitored completion; check callback/configuration and logs')
+    elif args.mirror_consoles:
+        monitor.mirror_consoles()
     else:
         data = monitor.status()
         if args.json:

@@ -164,6 +164,73 @@ class MonitorTests(unittest.TestCase):
                 self.monitor.follow()
         self.assertIn('new output after rotation', output.getvalue())
 
+    def test_console_viewer_starts_at_current_attempt_not_old_log_history(self):
+        self.monitor.prepare()
+        self.monitor.log_path.write_text('OLD_ATTEMPT\nCURRENT_ATTEMPT\n')
+        self.monitor.update(log_offset=len('OLD_ATTEMPT\n'))
+        output = []
+        with mock.patch.object(self.monitor, 'upstream_log', return_value=None):
+            self.monitor.follow(emit=output.append, stop=lambda: True, from_start=True)
+        self.assertIn('CURRENT_ATTEMPT', ''.join(output))
+        self.assertNotIn('OLD_ATTEMPT', ''.join(output))
+
+
+@unittest.skipUnless(os.name == 'posix', 'requires Linux nonblocking TTY support')
+class ConsoleMirrorTests(unittest.TestCase):
+    def test_real_bytes_reach_both_independent_ttys(self):
+        import pty
+        import select
+        pairs = [pty.openpty(), pty.openpty()]
+        for master, slave in pairs:
+            self.addCleanup(os.close, master)
+            self.addCleanup(os.close, slave)
+        warnings = []
+        mirror = MODULE.ConsoleMirror(warnings.append, tuple(os.ttyname(slave) for _, slave in pairs))
+        try:
+            mirror.write('INSTALL_STAGE_VISIBLE_ON_BOTH\n')
+            for master, _ in pairs:
+                self.assertTrue(select.select([master], [], [], 1)[0])
+                self.assertIn(b'INSTALL_STAGE_VISIBLE_ON_BOTH', os.read(master, 4096))
+            self.assertEqual(warnings, [])
+        finally:
+            mirror.close()
+
+    def test_blocked_port_does_not_block_other_display_and_memory_is_bounded(self):
+        import stat
+        warnings = []
+        healthy = bytearray()
+
+        def write(descriptor, data):
+            if descriptor == 11:
+                raise BlockingIOError
+            healthy.extend(data)
+            return len(data)
+
+        mirror = MODULE.ConsoleMirror(warnings.append, ('blocked', 'healthy'), capacity=64)
+        with mock.patch.object(MODULE.os, 'open', side_effect=[11, 12]), \
+                mock.patch.object(MODULE.os, 'fstat', return_value=mock.Mock(st_mode=stat.S_IFCHR)), \
+                mock.patch.object(MODULE.os, 'write', side_effect=write), \
+                mock.patch.object(MODULE.os, 'close'):
+            mirror.write('x' * 40)
+            mirror.write('y' * 40)
+            self.assertEqual(len(mirror.pending['blocked']), 64)
+            self.assertEqual(healthy, b'x' * 40 + b'y' * 40)
+            self.assertEqual(len(warnings), 1)
+            with mock.patch.object(MODULE.time, 'monotonic', side_effect=[0, 2]):
+                mirror.close()
+
+    def test_missing_or_non_tty_destination_is_best_effort_and_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'not-a-device'
+            path.write_text('must remain untouched')
+            warnings = []
+            mirror = MODULE.ConsoleMirror(warnings.append, (str(path), str(path.parent / 'missing')))
+            mirror.write('installer output')
+            mirror.write('more output')
+            mirror.close()
+            self.assertEqual(path.read_text(), 'must remain untouched')
+            self.assertEqual(len(warnings), 2)
+
 
 @unittest.skipUnless(shutil.which('ansible-playbook'), 'requires Ansible on the Linux CI runner')
 class AnsibleCallbackTests(unittest.TestCase):

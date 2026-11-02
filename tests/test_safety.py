@@ -35,6 +35,9 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIn('ConditionPathExists=!/var/lib/freepbx-install/complete', service)
         self.assertIn('ExecStartPost=/usr/bin/systemctl --no-block reboot', service)
         self.assertNotIn('/bin/rm', service)
+        self.assertIn('StandardOutput=journal\n', service)
+        self.assertNotIn('StandardOutput=journal+console', service)
+        self.assertIn('--mirror-consoles', (ROOT / 'bootstrap.sh').read_text())
         self.assertNotIn('reboot', (ROOT / 'bootstrap.sh').read_text().split('echo "Installation completed.')[0].replace('No reboot requested', ''))
 
     def test_intended_appliance_features_are_preserved(self):
@@ -69,11 +72,39 @@ class ConfigurationTests(unittest.TestCase):
         self.assertLess(tasks.index('upstream-started\n'), tasks.index('name: Run pinned FreePBX installer'))
         self.assertLess(tasks.index('name: Verify upstream installation'), tasks.index('name: Record verified upstream'))
 
+    def test_network_failures_are_not_hidden_by_stale_apt_indexes(self):
+        self.assertIn('APT::Update::Error-Mode=any update', (ROOT / 'bootstrap.sh').read_text())
+        tasks = yaml.safe_load((ROOT / 'tasks/install.yml').read_text())
+        block = next(task['block'] for task in tasks if 'block' in task)
+        profiles = next(task['loop'] for task in block if task['name'] == 'Configure short network retries for this installer only')
+        apt = next(profile['content'] for profile in profiles if profile['name'] == 'apt-network.conf')
+        wget = next(profile['content'] for profile in profiles if profile['name'] == 'wget-network.conf')
+        self.assertIn('APT::Update::Error-Mode "any";', apt)
+        self.assertIn('Acquire::Retries "3";', apt)
+        self.assertIn('read_timeout = 30', wget)
+        self.assertIn('tries = 3', wget)
+        # Validate real config syntax where the Linux test tools are available.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'network.conf'
+            if shutil.which('apt-config'):
+                path.write_text(apt)
+                result = subprocess.run(['apt-config', '-c', str(path), 'dump'], text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            if shutil.which('wget'):
+                path.write_text(wget)
+                result = subprocess.run(['wget', '--config=' + str(path), '--version'], text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_final_health_checks_are_not_skipped_on_first_install(self):
         play = yaml.safe_load((ROOT / 'site.yml').read_text())[0]
         final = play['tasks'][-1]
         self.assertTrue(final['vars']['check_custom_dialplan'])
         self.assertEqual(final['vars']['required_freepbx_modules'], ['framework', 'core', 'certman'])
+        health = yaml.safe_load((ROOT / 'tasks/health.yml').read_text())
+        web = next(task['ansible.builtin.uri'] for task in health if 'ansible.builtin.uri' in task)
+        self.assertEqual(web['url'], 'http://127.0.0.1/admin/')
+        self.assertNotIn(500, web['status_code'])
+        self.assertFalse(web['use_proxy'])
 
 
 @unittest.skipUnless(os.name == 'posix' and shutil.which('flock'), 'requires Linux Bash/flock')

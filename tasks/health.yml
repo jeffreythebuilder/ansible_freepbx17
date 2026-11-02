@@ -24,6 +24,18 @@
   changed_when: false
   failed_when: asterisk_uptime.rc != 0 or 'System uptime:' not in asterisk_uptime.stdout
 
+- name: Check FreePBX web application responds without server errors
+  ansible.builtin.uri:
+    url: http://127.0.0.1/admin/
+    follow_redirects: none
+    use_proxy: false
+    timeout: 10
+    status_code: [200, 301, 302, 303, 307, 308]
+  register: freepbx_web_check
+  retries: 3
+  delay: 5
+  until: freepbx_web_check is succeeded
+
 - name: Check the custom inbound context is loaded
   ansible.builtin.command: asterisk -rx 'dialplan show from-pstn-sg'
   register: inbound_context

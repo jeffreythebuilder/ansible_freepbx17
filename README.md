@@ -33,11 +33,14 @@ repositories, DNS, internet access and adequate disk space before starting.
 - Certman is force-installed with `fwconsole ma downloadinstall certman --force`,
   preserving the original behavior. Required failures are no longer ignored.
 - Completion requires successful commands, enabled framework/core/certman
-  modules, active core services, an Asterisk response and the custom context
-  loaded after `fwconsole reload`.
+  modules, active core services, an Asterisk response, a non-error web-application
+  response and the custom context loaded after `fwconsole reload`.
 - Default monitoring records the current stage/task, terminal success/failure,
   timestamps and last error. Root SSH login notices flag running, failed or
   interrupted installs; persistent logs remain available after disconnect/reboot.
+- First-boot/bootstrap output automatically streams to **both the physical
+  display (`/dev/tty0`) and serial console (`/dev/ttyS0`)**, including FreePBX's
+  detailed upstream log once it appears. Journal and disk logs are retained too.
 
 This preserves your appliance's intended services rather than imposing a new
 security policy. Old GRUB edits are not automatically undone. Audit them before
@@ -128,6 +131,42 @@ notice only for running/failed/interrupted/unknown states. This uses
 `/etc/profile.d/freepbx-install.sh` for standard login shells; it stays silent for
 non-interactive SSH commands, SCP/SFTP, non-root users and completed installs.
 Non-root administrators can still inspect details using `sudo`.
+
+### Physical display and serial console
+
+The bootstrap mirrors the current attempt to `tty0` (the active Linux virtual
+console on the VGA/HDMI display) and `ttyS0` concurrently. Nothing needs to be
+typed on either console. GRUB/serial-getty settings remain unchanged. The
+systemd service writes to the journal rather than also writing `/dev/console`,
+which avoids duplicating output on whichever device is the primary console.
+This requires a Linux text console; a graphical desktop need not show `tty0`.
+
+Console mirroring is a separate nonblocking viewer, so an unplugged, unavailable
+or flow-controlled display cannot stall installation. If a console cannot keep
+up, its bounded buffer may drop older display output; a warning is recorded and
+the full output remains in the persistent logs. Historical attempts are not
+replayed on the consoles at the start of a new attempt. These automatic console
+streams apply to bootstrap/service runs; a manual `ansible-playbook` still prints
+to its invoking terminal and records its task/results in the combined log.
+
+### Network outages and installation correctness
+
+The selected policy is **fail after short retries**, not wait indefinitely.
+Bootstrap uses bounded APT/HTTPS retries; repository-update errors are fatal
+instead of being accepted with stale package lists. The upstream installer gets
+private APT/wget timeout/retry configuration, without changing the machine's
+global package-manager configuration or modifying the checksum-verified script.
+These settings apply to APT/wget, not every network client used by FreePBX/npm.
+There is no overall stall watchdog for arbitrary upstream commands.
+
+If the **server** loses connectivity, a command may recover within its retries or
+fail. Failure stops deployment without requesting a reboot and records the
+stage/task/error. If only your **SSH session** drops, the systemd-run installation
+continues; reconnect to inspect it. A partial upstream install is never silently
+retried or marked complete just because a configuration file exists. Follow the
+recovery instructions below. Monitoring and checks detect known failures; only
+an actual fresh Debian 12 installation and call tests can validate the complete
+deployment in your environment.
 
 Persistent files:
 

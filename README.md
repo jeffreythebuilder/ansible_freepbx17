@@ -61,7 +61,7 @@ As root, clone the repository, check out a **reviewed full commit SHA**, then:
 
 ```sh
 apt-get update
-apt-get install -y ansible git ca-certificates python3
+apt-get install -y ansible git ca-certificates python3 iproute2
 git clone https://github.com/jeffreythebuilder/ansible_freepbx17.git
 cd ansible_freepbx17
 git checkout --detach YOUR_REVIEWED_40_CHARACTER_COMMIT_SHA
@@ -88,7 +88,7 @@ intentional features, not opt-in features.
 From the reviewed checkout, as root:
 
 ```sh
-apt-get install -y python3
+apt-get install -y python3 iproute2
 bash scripts/setup-first-boot.sh "$(git rev-parse HEAD)"
 # Optionally add: PLAYBOOK_VARS_FILE=/root/freepbx-vars.yml
 ```
@@ -185,7 +185,11 @@ display. Inspect its status/logs first.
 ### Network outages and installation correctness
 
 The selected policy is **fail after short retries**, not wait indefinitely.
-Bootstrap uses bounded APT/HTTPS retries; repository-update errors are fatal
+Bootstrap and direct playbook runs first allow up to 120 seconds for an assigned
+global IPv4/IPv6 address and a default route on that interface. This prevents
+starting package downloads just because `network-online.target` was reached
+before DHCP finished. It does not prove DNS or internet access; download checks
+still need to succeed. Bootstrap uses bounded APT/HTTPS retries; update errors are fatal
 instead of being accepted with stale package lists. The upstream installer gets
 private APT/wget timeout/retry configuration, without changing the machine's
 global package-manager configuration or modifying the checksum-verified script.
@@ -200,6 +204,11 @@ retried or marked complete just because a configuration file exists. Follow the
 recovery instructions below. Monitoring and checks detect known failures; only
 an actual fresh Debian 12 installation and call tests can validate the complete
 deployment in your environment.
+
+The rebuilt ISO also sets Debian Installer's link detection timeout to 30 seconds
+and DHCP timeout to 120 seconds. The default text Install path is unattended for
+the preseeded choices, but firmware/network/disk failures can still require
+intervention. It never silently selects an offline install after DHCP failure.
 
 Persistent files:
 

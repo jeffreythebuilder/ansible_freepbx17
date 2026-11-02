@@ -7,7 +7,7 @@ Downloading only bootstrap.sh and the service from moving `main` is incomplete.
 For an unattended Debian 12 ISO, export a reviewed repository revision into
 `/freepbx/` on the ISO and write that revision's full commit SHA plus a newline
 to `/freepbx/REVISION`. Include `python3`, `git`, `curl`, `ca-certificates`,
-`openssh-server`, `ansible`, and `logrotate` in the target's package selection.
+`openssh-server`, `ansible`, `iproute2`, and `logrotate` in the target's package selection.
 Keep any existing packages needed by your image.
 
 Replace only the existing late command with this single logical line:
@@ -45,9 +45,12 @@ python scripts/rebuild-iso.py --input-iso original.iso --source-tree /mnt/origin
   --output-iso corrected.iso --work-dir /private/new-iso-stage --xorriso /usr/bin/xorriso
 ```
 
-The source image is never overwritten. Only package selection and late-command
-lines are rewritten; credentials, partitioning, boot-menu choices and all other
-preseed settings remain unchanged. It regenerates the file checksum manifest,
+The source image is never overwritten. Package selection, late-command and two
+network timeout settings are managed; credentials, partitioning, boot-menu
+choices and all other preseed settings remain unchanged. Link detection waits
+up to 30 seconds and DHCP up to 120 seconds, using Debian Bookworm's documented
+`netcfg/link_wait_timeout` and `netcfg/dhcp_timeout` settings. These are bounded
+waits, not an indefinite DHCP retry loop. It regenerates the file checksum manifest,
 replays BIOS/UEFI/hybrid boot metadata, verifies every manifest entry inside the
 new image, and writes a SHA256 sidecar plus a verification report. The private
 work directory contains your preseed: do not publish it or commit it to GitHub.

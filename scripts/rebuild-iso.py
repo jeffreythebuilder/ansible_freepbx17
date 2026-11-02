@@ -20,33 +20,41 @@ LATE_COMMAND = (
     "in-target /bin/bash -c 'cd /root/freepbx-setup && "
     'bash scripts/setup-first-boot.sh "$(cat REVISION)"\''
 )
+NETWORK_PREFIXES = ('d-i netcfg/link_wait_timeout string ', 'd-i netcfg/dhcp_timeout string ')
 
 
 def update_preseed(text):
     result = []
-    late = packages = 0
+    late = packages = network = 0
     for line in text.splitlines(keepends=True):
         ending = '\r\n' if line.endswith('\r\n') else '\n'
-        if line.startswith('d-i preseed/late_command string '):
+        if line.startswith(NETWORK_PREFIXES):
+            continue
+        if line.startswith('d-i netcfg/choose_interface select '):
+            result.append('d-i netcfg/link_wait_timeout string 30' + ending)
+            result.append('d-i netcfg/dhcp_timeout string 120' + ending)
+            result.append(line)
+            network += 1
+        elif line.startswith('d-i preseed/late_command string '):
             result.append(LATE_COMMAND + ending)
             late += 1
         elif line.startswith('d-i pkgsel/include string '):
             selection = line.strip().split()[3:]
-            for package in ['python3', 'git', 'curl', 'ca-certificates', 'openssh-server', 'ansible', 'logrotate']:
+            for package in ['python3', 'git', 'curl', 'ca-certificates', 'openssh-server', 'ansible', 'logrotate', 'iproute2']:
                 if package not in selection:
                     selection.append(package)
             result.append('d-i pkgsel/include string ' + ' '.join(selection) + ending)
             packages += 1
         else:
             result.append(line)
-    if late != 1 or packages != 1:
-        raise ValueError('Expected exactly one late command and package-selection line')
+    if late != 1 or packages != 1 or network != 1:
+        raise ValueError('Expected exactly one late command, package-selection and network-interface line')
     return ''.join(result)
 
 
 def protected_lines(text):
     return [line for line in text.splitlines() if not line.startswith(
-        ('d-i preseed/late_command string ', 'd-i pkgsel/include string '))]
+        ('d-i preseed/late_command string ', 'd-i pkgsel/include string ') + NETWORK_PREFIXES)]
 
 
 def xorriso_path(path):
@@ -158,6 +166,7 @@ def main():
     report = (f'Revision: {revision}\nOriginal SHA256: {original_hash}\nOutput SHA256: {final_hash}\n'
               f'Verified manifest entries: {len(entries)}\n'
               'Credentials and partitioning settings: preserved\n'
+              'Network waits: link detection 30s; DHCP 120s; first-boot address/default route 120s\n'
               'BIOS/UEFI boot platform metadata: preserved\n'
               'No boot or full installation test performed. Test only in a disposable VM.\n')
     (args.work_dir / 'verification.txt').write_text(report)

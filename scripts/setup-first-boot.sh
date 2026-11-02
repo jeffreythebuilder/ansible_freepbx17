@@ -14,6 +14,7 @@ if [[ ! $revision =~ ^[0-9a-f]{40}$ ]]; then
 fi
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 command -v python3 >/dev/null
+command -v ip >/dev/null
 test -f "$root/bootstrap.sh"
 test -f "$root/freepbx-install.service"
 

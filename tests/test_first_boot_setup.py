@@ -44,6 +44,9 @@ class FirstBootSetupTests(unittest.TestCase):
         python = self.bin / 'python3'
         python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
         python.chmod(0o755)
+        ip = self.bin / 'ip'
+        ip.write_text('#!/bin/sh\nexit 0\n')
+        ip.chmod(0o755)
         self.env = dict(os.environ, PATH=f'{self.bin}:{os.environ["PATH"]}', CALL_LOG=str(self.log))
 
     def run_setup(self, revision='a' * 40, **environment):

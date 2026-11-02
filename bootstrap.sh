@@ -102,6 +102,9 @@ if [[ ! ${PLAYBOOK_REF:-} =~ ^[0-9a-f]{40}$ ]]; then
     exit 1
 fi
 
+stage 'Waiting for a network address and default route (up to 120 seconds)'
+python3 "$(dirname -- "$monitor")/wait_for_network.py" --timeout 120
+
 export DEBIAN_FRONTEND=noninteractive
 stage 'Installing bootstrap dependencies'
 echo "Installing dependencies (APT retries transient network failures)..."

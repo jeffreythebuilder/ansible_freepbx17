@@ -30,6 +30,15 @@
           - ansible_virtualization_type not in ['docker', 'lxc', 'podman', 'container']
         fail_msg: Use a fresh Debian 12 amd64 machine or full VM with systemd, not a container.
 
+    - name: Wait for an address and default route before network-dependent setup
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/monitor/wait_for_network.py"
+          - --timeout
+          - '120'
+      changed_when: false
+
     - name: Check hostname resolution required by the upstream installer
       ansible.builtin.command: hostname -f
       changed_when: false

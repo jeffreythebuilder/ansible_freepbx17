@@ -64,6 +64,29 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIn('exten => h,1,NoOp()', dialplan)
         self.assertNotIn('CUT(CUT(', dialplan)
 
+    def test_management_access_is_applied_before_freepbx_installation(self):
+        tasks = yaml.safe_load((ROOT / 'site.yml').read_text())[0]['tasks']
+        installer_index = next(i for i, task in enumerate(tasks)
+                               if task.get('ansible.builtin.import_tasks') == 'tasks/install.yml')
+        ssh_index = next(i for i, task in enumerate(tasks)
+                         if task.get('ansible.builtin.import_tasks') == 'tasks/ssh.yml')
+        serial_index = next(i for i, task in enumerate(tasks)
+                            if task.get('ansible.builtin.import_tasks') == 'tasks/serial.yml')
+        flush_index = next(i for i, task in enumerate(tasks)
+                           if task.get('ansible.builtin.meta') == 'flush_handlers')
+        self.assertLess(ssh_index, installer_index)
+        self.assertLess(serial_index, flush_index)
+        self.assertLess(flush_index, installer_index)
+        ssh_tasks = yaml.safe_load((ROOT / 'tasks/ssh.yml').read_text())
+        package_index = next(i for i, task in enumerate(ssh_tasks) if 'ansible.builtin.apt' in task)
+        validate_index = next(i for i, task in enumerate(ssh_tasks) if 'ansible.builtin.blockinfile' in task)
+        self.assertLess(package_index, validate_index)
+        self.assertEqual(ssh_tasks[package_index]['ansible.builtin.apt']['name'], 'openssh-server')
+        apply = ssh_tasks[-1]['ansible.builtin.service']
+        self.assertEqual(apply['name'], 'ssh')
+        self.assertEqual(apply['state'], 'reloaded')
+        self.assertTrue(apply['enabled'])
+
     def test_upstream_identity_and_completion_guards(self):
         tasks = (ROOT / 'tasks/install.yml').read_text()
         self.assertIn('checksum: "sha256:', tasks)

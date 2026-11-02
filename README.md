@@ -89,15 +89,13 @@ From the reviewed checkout, as root:
 
 ```sh
 apt-get install -y python3
-bash scripts/install-monitor.sh
-install -m 0700 bootstrap.sh /root/bootstrap.sh
-install -m 0644 freepbx-install.service /etc/systemd/system/freepbx-install.service
-printf 'PLAYBOOK_REF=%s\n' "$(git rev-parse HEAD)" > /etc/default/freepbx-install
-chmod 0600 /etc/default/freepbx-install
+bash scripts/setup-first-boot.sh "$(git rev-parse HEAD)"
 # Optionally add: PLAYBOOK_VARS_FILE=/root/freepbx-vars.yml
-systemctl daemon-reload
-systemctl enable freepbx-install.service
 ```
+
+The setup script installs all monitor/bootstrap/service files and pins the
+revision **before** enabling the service. Existing extra-vars settings are
+preserved. It does not start installation or reboot the machine.
 
 Start it on next boot, or run `systemctl start freepbx-install.service` now.
 **A successful service run automatically reboots the machine.** Failure never
@@ -175,6 +173,8 @@ with its supplied `ansible.cfg`/callback, or deploy the updated bootstrap and
 monitor files. Merging a change on GitHub does not update code already copied
 into an ISO or installed on a server. If your image pins `PLAYBOOK_REF`, update
 that to the newly reviewed commit when rebuilding/updating the image.
+See [ISO integration](iso/README.md) for a complete offline first-boot payload and
+a late-command example. The old two-file download hook is not sufficient.
 
 For an existing checkout, run `bash scripts/install-monitor.sh` once as root to
 deploy updated SSH helper files, then reconnect. New playbook runs start console

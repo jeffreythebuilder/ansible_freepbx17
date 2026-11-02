@@ -3,11 +3,15 @@ Description=FreePBX First Boot Install
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/root/bootstrap.sh
+ConditionPathExists=!/var/lib/freepbx-install/complete
 
 [Service]
 Type=oneshot
+EnvironmentFile=/etc/default/freepbx-install
 ExecStart=/bin/bash /root/bootstrap.sh
-ExecStartPost=/bin/rm -f /root/bootstrap.sh
+# Only runs after a successful bootstrap. Queue, rather than wait for, reboot.
+ExecStartPost=/usr/bin/systemctl --no-block reboot
+TimeoutStartSec=infinity
 RemainAfterExit=yes
 StandardOutput=journal+console
 StandardError=journal+console

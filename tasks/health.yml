@@ -1,0 +1,42 @@
+---
+- name: Check FreePBX configuration exists and is nonempty
+  ansible.builtin.stat:
+    path: /etc/freepbx.conf
+  register: installed_freepbx_config
+
+- name: Require a populated FreePBX configuration
+  ansible.builtin.assert:
+    that:
+      - installed_freepbx_config.stat.exists
+      - installed_freepbx_config.stat.size | default(0) > 0
+
+- name: Check required services are active
+  ansible.builtin.command: "systemctl is-active {{ item }}"
+  loop:
+    - apache2
+    - mariadb
+    - chrony
+  changed_when: false
+
+- name: Check Asterisk responds to its control socket
+  ansible.builtin.command: asterisk -rx 'core show uptime'
+  register: asterisk_uptime
+  changed_when: false
+  failed_when: asterisk_uptime.rc != 0 or 'System uptime:' not in asterisk_uptime.stdout
+
+- name: Check the custom inbound context is loaded
+  ansible.builtin.command: asterisk -rx 'dialplan show from-pstn-sg'
+  register: inbound_context
+  changed_when: false
+  failed_when: inbound_context.rc != 0 or "[ Context 'from-pstn-sg'" not in inbound_context.stdout
+  when: check_custom_dialplan | default(false) | bool
+
+- name: Read module status after installation or reload
+  ansible.builtin.import_tasks: modules.yml
+
+- name: Require enabled core modules
+  ansible.builtin.assert:
+    that:
+      - (freepbx_module_rows | selectattr('0', 'equalto', item) | list | first | default(['', '', '']))[2] == 'Enabled'
+    fail_msg: "Required module {{ item }} is not enabled; inspect fwconsole ma list."
+  loop: "{{ required_freepbx_modules | default(['framework', 'core']) }}"

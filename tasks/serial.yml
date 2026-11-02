@@ -1,0 +1,36 @@
+---
+- name: Inspect serial device and GRUB configuration directory
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - /dev/ttyS0
+    - /etc/default/grub
+    - /etc/default/grub.d
+  register: serial_prerequisites
+
+- name: Require a real serial device and Debian GRUB support
+  ansible.builtin.assert:
+    that:
+      - serial_prerequisites.results[0].stat.ischr | default(false)
+      - serial_prerequisites.results[1].stat.exists
+      - serial_prerequisites.results[2].stat.isdir | default(false)
+    fail_msg: Serial console was requested, but ttyS0 or GRUB support is unavailable.
+
+- name: Configure GRUB serial console without replacing existing kernel parameters
+  ansible.builtin.copy:
+    dest: /etc/default/grub.d/99-freepbx-serial.cfg
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Preserve existing parameters; the final console is the primary console.
+      GRUB_CMDLINE_LINUX_DEFAULT="${GRUB_CMDLINE_LINUX_DEFAULT} console=tty0 console=ttyS0,115200n8"
+      GRUB_TERMINAL="console serial"
+      GRUB_SERIAL_COMMAND="serial --speed=115200 --unit=0 --word=8 --parity=no --stop=1"
+  notify: update grub
+
+- name: Enable serial login console
+  ansible.builtin.systemd:
+    name: serial-getty@ttyS0.service
+    enabled: true
+    state: started

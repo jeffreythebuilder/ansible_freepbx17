@@ -1,0 +1,38 @@
+name: Validate deployment
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          python3 -m pip install 'ansible-core==2.14.18' 'PyYAML==6.0.3'
+      - name: Check Bash
+        run: |
+          bash -n bootstrap.sh
+          shellcheck bootstrap.sh
+      - name: Check Ansible
+        run: ansible-playbook -i localhost, -c local site.yml --syntax-check
+      - name: Run regression tests
+        run: python3 -m unittest discover -s tests -v
+  dialplan:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test Asterisk
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y asterisk
+          sudo systemctl stop asterisk
+      - name: Exercise actual dialplan functions and routing
+        run: sudo python3 tests/asterisk_integration.py

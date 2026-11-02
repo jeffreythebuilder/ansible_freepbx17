@@ -46,14 +46,17 @@
         group: root
         mode: '0700'
 
-    - name: Install and validate FreePBX
-      ansible.builtin.import_tasks: tasks/install.yml
-
     - name: Enable root password SSH access
       ansible.builtin.import_tasks: tasks/ssh.yml
 
     - name: Configure mandatory serial console
       ansible.builtin.import_tasks: tasks/serial.yml
+
+    - name: Apply management console changes before starting FreePBX
+      ansible.builtin.meta: flush_handlers
+
+    - name: Install and validate FreePBX
+      ansible.builtin.import_tasks: tasks/install.yml
 
     - name: Install dnsmasq
       ansible.builtin.apt:
@@ -101,11 +104,6 @@
         required_freepbx_modules: [framework, core, certman]
 
   handlers:
-    - name: reload ssh
-      ansible.builtin.service:
-        name: ssh
-        state: reloaded
-
     - name: update grub
       ansible.builtin.command: update-grub
 

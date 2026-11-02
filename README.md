@@ -22,10 +22,14 @@ repositories, DNS, internet access and adequate disk space before starting.
   `ssh` service. Set a strong root password yourself; this playbook does not set,
   unlock or reset passwords or bypass PAM/account/access restrictions. Test from
   your actual management client; address-specific `Match` rules may differ.
+  The SSH server is installed and its configuration applied **before FreePBX
+  starts**, including on retries where an earlier run wrote but did not apply it.
 - Serial-console setup is mandatory: GRUB, serial-getty, `stty` at 115200 and
   `setserial baud_base 115200` are retained. A GRUB drop-in appends console options
   without replacing existing kernel parameters. The UART baud base is a hardware
   parameter, not the current line speed; unsupported hardware fails explicitly.
+  Runtime serial speed/login-console setup and the GRUB update also complete
+  **before FreePBX starts**, so an installer failure does not defer those steps.
 - `dnsmasq` is installed as before. Its site-specific DNS/DHCP configuration is
   left to the administrator; installing it does not configure DHCP provisioning.
 - Chrony serves NTP with unrestricted `allow`, as intended for this appliance.

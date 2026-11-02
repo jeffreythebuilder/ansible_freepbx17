@@ -1,4 +1,17 @@
 ---
+- name: Ensure SSH server is installed before management access is configured
+  ansible.builtin.apt:
+    name: openssh-server
+    state: present
+
+- name: Ensure SSH privilege-separation runtime directory exists for validation
+  ansible.builtin.file:
+    path: /run/sshd
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
 # OpenSSH generally takes the first global value. Prepend before Include/Match
 # so an earlier cloud-image drop-in cannot silently disable password login.
 - name: Enable root and password authentication with syntax validation
@@ -10,7 +23,6 @@
       PermitRootLogin yes
       PasswordAuthentication yes
     validate: /usr/sbin/sshd -t -f %s
-  notify: reload ssh
 
 - name: Check effective root SSH authentication settings
   ansible.builtin.command:
@@ -30,8 +42,10 @@
       - "'authenticationmethods any' in root_ssh_config.stdout_lines or 'authenticationmethods password' in root_ssh_config.stdout_lines"
     fail_msg: A Match or AuthenticationMethods policy prevents root password-only SSH; inspect sshd -T and sshd_config.
 
-- name: Enable and start Debian SSH service
+- name: Enable and apply Debian SSH configuration before starting FreePBX
   ansible.builtin.service:
     name: ssh
     enabled: true
-    state: started
+    # Reload even when the file is unchanged: an interrupted earlier run may
+    # have written it without applying it. Reload also starts an inactive service.
+    state: reloaded

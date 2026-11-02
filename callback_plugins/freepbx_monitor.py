@@ -3,6 +3,8 @@
 import importlib.util
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 from ansible import context
@@ -18,6 +20,7 @@ class CallbackModule(CallbackBase):
     def __init__(self):
         super().__init__()
         source = Path(__file__).resolve().parents[1] / 'monitor/freepbx_install_monitor.py'
+        self.monitor_source = source
         spec = importlib.util.spec_from_file_location('freepbx_install_monitor', source)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -26,6 +29,7 @@ class CallbackModule(CallbackBase):
         self.managed = os.environ.get('FREEPBX_MONITOR_CAPTURED') == '1'
         self.active = False
         self.failed = False
+        self.viewer = None
 
     def _log(self, message):
         if not self.managed:
@@ -37,11 +41,37 @@ class CallbackModule(CallbackBase):
         if self.managed:
             self.active = True
         else:
-            self.monitor.begin(os.getpid(), 'ansible-playbook')
+            offset = self.monitor.log_path.stat().st_size if self.monitor.log_path.exists() else 0
+            self.monitor.begin(os.getpid(), 'ansible-playbook', log_offset=offset)
             self.active = True
         self.monitor.update(stage='Running Ansible playbook', task='')
         self._log('PLAYBOOK START')
         os.environ['FREEPBX_MONITOR_ACTIVE'] = '1'
+        if not self.managed and os.geteuid() == 0:
+            # Direct Ansible runs need the same automatic physical/serial view
+            # as bootstrap runs. Launch the reviewed checkout's helper, not an
+            # older installed copy, and never inherit an interactive terminal.
+            self.viewer = subprocess.Popen(
+                [sys.executable, str(self.monitor_source), '--mirror-consoles'],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, close_fds=True)
+
+    def _stop_viewer(self):
+        if self.viewer is None:
+            return
+        (self.monitor.directory / 'console-stop').touch()
+        try:
+            code = self.viewer.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            self.viewer.terminate()
+            try:
+                code = self.viewer.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                self.viewer.kill()
+                code = self.viewer.wait(timeout=1)
+        if code:
+            self.monitor.append_log('Console viewer exited abnormally; installation output remains in the persistent log.')
+        self.viewer = None
 
     def v2_playbook_on_task_start(self, task, is_conditional):
         if self.active:
@@ -88,3 +118,4 @@ class CallbackModule(CallbackBase):
             if not self.managed:
                 self.monitor.update(stage='Ansible playbook completed')
                 self.monitor.finish('completed')
+        self._stop_viewer()

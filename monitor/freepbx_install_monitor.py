@@ -39,7 +39,7 @@ def process_identity(pid):
 class ConsoleMirror:
     """Bounded, nonblocking fan-out: a dead serial receiver cannot stall setup."""
 
-    def __init__(self, warning, devices=('/dev/tty0', '/dev/ttyS0'), capacity=262144):
+    def __init__(self, warning, devices=('/dev/tty1', '/dev/ttyS0'), capacity=262144):
         self.warning = warning
         self.devices = devices
         self.capacity = capacity
@@ -156,6 +156,7 @@ class Monitor:
             if self.is_alive(previous):
                 raise RuntimeError('Another monitored installation is already running')
             boot, ticks = process_identity(pid)
+            (self.directory / 'console-stop').unlink(missing_ok=True)
             return self._write(dict(state='running', stage='Starting installation', task='',
                                     started_at=timestamp(), finished_at='', pid=int(pid),
                                     boot_id=boot, start_ticks=ticks, source=source,
@@ -208,7 +209,7 @@ class Monitor:
         except (OSError, ValueError):
             return None
 
-    def follow(self, emit=None, stop=None, from_start=False, tick=None):
+    def follow(self, emit=None, stop=None, from_start=False, tick=None, current_attempt=False):
         """Discover the upstream log even when --follow starts before installation.
 
         File identity/size checks also handle copytruncate and renamed logs.
@@ -232,7 +233,10 @@ class Monitor:
                             emit(f'\n==> {path} <==\n')
                             # Start near the end on attach; subsequent reads are live.
                             offset = self.read().get('log_offset', 0) if path == self.log_path else 0
-                            reader.seek(min(metadata.st_size, offset) if from_start else max(0, metadata.st_size - 16000))
+                            position = min(metadata.st_size, offset) if from_start else max(0, metadata.st_size - 16000)
+                            if current_attempt and path == self.log_path and offset <= metadata.st_size:
+                                position = max(position, offset)
+                            reader.seek(position)
                         if reader.tell() > metadata.st_size:
                             reader.seek(0)
                         chunk = reader.read(65536)
@@ -257,6 +261,7 @@ class Monitor:
 
     def mirror_consoles(self):
         owner = self.read()
+        self.activate_progress_console()
         mirror = ConsoleMirror(self.append_log)
         try:
             self.follow(emit=mirror.write, from_start=True, tick=mirror.flush,
@@ -264,8 +269,22 @@ class Monitor:
         finally:
             mirror.close()
 
+    def activate_progress_console(self):
+        """Show the text progress VT, rather than writing invisibly behind a GUI."""
+        descriptor = None
+        try:
+            descriptor = os.open('/dev/tty0', os.O_WRONLY | os.O_NONBLOCK | os.O_NOCTTY)
+            if not stat.S_ISCHR(os.fstat(descriptor).st_mode) or fcntl is None:
+                raise OSError('Linux virtual console is unavailable')
+            fcntl.ioctl(descriptor, 0x5606, 1)  # Linux VT_ACTIVATE: select VT1.
+        except OSError as error:
+            self.append_log(f'Could not select physical progress console tty1: {clean(error)}; serial and persistent logs remain available.')
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
 
-def display(monitor, data, notice=False):
+
+def display(monitor, data, notice=False, instructions=True):
     state = clean(data.get('state', 'unknown')).upper()
     print(f'FreePBX installation: {state}')
     print(f"Stage: {clean(data.get('stage', 'unknown'))}")
@@ -283,8 +302,38 @@ def display(monitor, data, notice=False):
             print(f'Latest upstream log: {upstream}')
         print('Live output: freepbx-install-status --follow')
         print('Systemd: systemctl status freepbx-install.service')
-    else:
+    elif instructions:
         print('Run freepbx-install-status for details or --follow for live output.')
+
+
+def login_progress(monitor):
+    """Show progress without a manual command, then return to the login shell."""
+    data = monitor.status()
+    state = data.get('state')
+    if state not in ('running', 'failed', 'interrupted', 'unknown'):
+        return
+    display(monitor, data, notice=True, instructions=False)
+    if state == 'unknown':
+        return
+    if state in ('failed', 'interrupted'):
+        print('Recent installation output:', flush=True)
+        monitor.follow(stop=lambda: True, current_attempt=True)
+        return
+    owner = tuple(data.get(key) for key in ('pid', 'boot_id', 'start_ticks', 'started_at'))
+
+    def finished():
+        current = monitor.status()
+        current_owner = tuple(current.get(key) for key in ('pid', 'boot_id', 'start_ticks', 'started_at'))
+        return current.get('state') != 'running' or current_owner != owner
+
+    print('Showing installation progress automatically. Ctrl-C returns to the shell without stopping installation.', flush=True)
+    try:
+        monitor.follow(stop=finished, current_attempt=True)
+    except KeyboardInterrupt:
+        print('\nStopped viewing; installation has not been stopped. Returning to the shell.')
+        return
+    print('\nInstallation progress viewer finished. Returning to the shell.')
+    display(monitor, monitor.status(), notice=True, instructions=False)
 
 
 def main(argv=None):
@@ -293,6 +342,7 @@ def main(argv=None):
     modes.add_argument('--json', action='store_true', help='Print machine-readable status')
     modes.add_argument('--follow', action='store_true', help='Follow combined and current upstream logs; Ctrl-C only stops viewing')
     modes.add_argument('--notice', action='store_true', help='Print a short login notice only for running/failed/interrupted installs')
+    modes.add_argument('--login', action='store_true', help='Automatically show installation progress on root SSH login')
     modes.add_argument('--begin', type=int, metavar='PID', help=argparse.SUPPRESS)
     modes.add_argument('--stage', metavar='STAGE', help=argparse.SUPPRESS)
     modes.add_argument('--finish', choices=['completed', 'failed'], help=argparse.SUPPRESS)
@@ -306,7 +356,7 @@ def main(argv=None):
     parser.add_argument('--log-offset', type=int, default=0, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if getattr(os, 'geteuid', lambda: -1)() != 0:
-        if args.notice:
+        if args.notice or args.login:
             return 0
         parser.exit(1, 'Run as root or use sudo freepbx-install-status.\n')
     monitor = Monitor()
@@ -332,6 +382,8 @@ def main(argv=None):
         elif args.notice:
             if data.get('state') in ('running', 'failed', 'interrupted', 'unknown'):
                 display(monitor, data, notice=True)
+        elif args.login:
+            login_progress(monitor)
         elif args.follow:
             monitor.prepare()
             monitor.log_path.touch(mode=0o600, exist_ok=True)

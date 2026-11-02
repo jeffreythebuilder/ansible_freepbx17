@@ -40,11 +40,13 @@ repositories, DNS, internet access and adequate disk space before starting.
   modules, active core services, an Asterisk response, a non-error web-application
   response and the custom context loaded after `fwconsole reload`.
 - Default monitoring records the current stage/task, terminal success/failure,
-  timestamps and last error. Root SSH login notices flag running, failed or
-  interrupted installs; persistent logs remain available after disconnect/reboot.
-- First-boot/bootstrap output automatically streams to **both the physical
-  display (`/dev/tty0`) and serial console (`/dev/ttyS0`)**, including FreePBX's
-  detailed upstream log once it appears. Journal and disk logs are retained too.
+  timestamps and last error. Root SSH logins automatically show live progress
+  while installation runs, or recent output after failed/interrupted runs.
+  Persistent logs remain available after disconnect/reboot.
+- Both direct playbook and bootstrap runs automatically stream to **the physical
+  text console (`/dev/tty1`) and serial console (`/dev/ttyS0`)**, including the
+  upstream log once it appears. The viewer requests VT1 so output is not hidden
+  behind a different virtual console/graphical screen. Disk logs remain available.
 
 This preserves your appliance's intended services rather than imposing a new
 security policy. Old GRUB edits are not automatically undone. Audit them before
@@ -106,13 +108,20 @@ two concurrent bootstrap runs. Running the bootstrap directly requires exporting
 `PLAYBOOK_REF`; only the systemd service loads `/etc/default/freepbx-install`.
 
 Install the monitor files **before** enabling the first-boot service so even an
-early APT/Git/network failure has a status command and SSH notice available.
+early APT/Git/network failure has a status command and SSH progress hook available.
 Bootstrap records a missing/invalid deployment revision as a monitored failure;
 systemd also records abnormal termination or a failed reboot request.
 
 ## Check from any SSH session
 
 As root (or prefix the commands with `sudo`):
+
+**No monitoring command is needed on a new root SSH login while installation is
+running.** Live progress appears automatically. Completion/failure returns you
+to the shell; Ctrl-C returns to the shell without stopping installation. If the
+installation already failed or was interrupted, recent output is shown once.
+
+Commands for an already-open session or further inspection:
 
 ```sh
 freepbx-install-status          # State, current stage/task, last error and log paths
@@ -130,28 +139,48 @@ systemd service when installation must survive disconnects.
 The state is `RUNNING`, `FAILED`, `COMPLETED`, `INTERRUPTED` (runner died or the
 machine rebooted mid-install), `NOT_STARTED`, or `UNKNOWN` if state cannot be read.
 Interruption detection checks both the boot ID and process start time, not just a
-PID that could have been reused. A root interactive SSH login displays a brief
-notice only for running/failed/interrupted/unknown states. This uses
+PID that could have been reused. A root interactive SSH login automatically
+streams running-install progress, or shows recent failed/interrupted output.
+Unknown status produces a short error without starting a viewer. This uses
 `/etc/profile.d/freepbx-install.sh` for standard login shells; it stays silent for
 non-interactive SSH commands, SCP/SFTP, non-root users and completed installs.
-Non-root administrators can still inspect details using `sudo`.
+Non-root administrators can still inspect details using `sudo`. The login hook
+applies to new SSH logins; it does not inject output into already-open shells or
+start the installer itself. Completed installations stay quiet.
 
 ### Physical display and serial console
 
-The bootstrap mirrors the current attempt to `tty0` (the active Linux virtual
-console on the VGA/HDMI display) and `ttyS0` concurrently. Nothing needs to be
+Both bootstrap and direct root `ansible-playbook` runs start the console viewer
+automatically. It requests Linux VT1 and mirrors the current attempt to `tty1`
+(the VGA/HDMI text progress screen) and `ttyS0` concurrently. Nothing needs to be
 typed on either console. GRUB/serial-getty settings remain unchanged. The
 systemd service writes to the journal rather than also writing `/dev/console`,
 which avoids duplicating output on whichever device is the primary console.
-This requires a Linux text console; a graphical desktop need not show `tty0`.
+This requires a Linux virtual console. If switching to VT1 is unsupported or
+denied, a warning is logged; serial/disk output continue. The viewer does not
+wait for a console login, and it never stops the installer when a display fails.
 
 Console mirroring is a separate nonblocking viewer, so an unplugged, unavailable
 or flow-controlled display cannot stall installation. If a console cannot keep
 up, its bounded buffer may drop older display output; a warning is recorded and
 the full output remains in the persistent logs. Historical attempts are not
-replayed on the consoles at the start of a new attempt. These automatic console
-streams apply to bootstrap/service runs; a manual `ansible-playbook` still prints
-to its invoking terminal and records its task/results in the combined log.
+replayed on the consoles at the start of a new attempt. A direct playbook also
+prints to its invoking terminal and records task/results in the combined log.
+The direct-run viewer ends with the playbook or when its controller disappears.
+
+### Existing machines and ISO images
+
+This repository does not build an ISO. Your ISO must run the updated playbook
+with its supplied `ansible.cfg`/callback, or deploy the updated bootstrap and
+monitor files. Merging a change on GitHub does not update code already copied
+into an ISO or installed on a server. If your image pins `PLAYBOOK_REF`, update
+that to the newly reviewed commit when rebuilding/updating the image.
+
+For an existing checkout, run `bash scripts/install-monitor.sh` once as root to
+deploy updated SSH helper files, then reconnect. New playbook runs start console
+viewing automatically; an already-running older controller is not replaced by
+updating these files. Do not restart a partial installation just to change its
+display. Inspect its status/logs first.
 
 ### Network outages and installation correctness
 

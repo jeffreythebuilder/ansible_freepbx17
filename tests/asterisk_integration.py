@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     asterisk = shutil.which('asterisk') or '/usr/sbin/asterisk'
+    package_files = subprocess.check_output(['dpkg', '-L', 'asterisk-modules'], text=True).splitlines()
+    module_dir = next(Path(path).parent for path in package_files if path.endswith('/pbx_config.so'))
     with tempfile.TemporaryDirectory(prefix='freepbx-dialplan-test-') as directory:
         base = Path(directory)
         for name in ['run', 'log', 'spool', 'lib', 'cache', 'keys']:
@@ -19,7 +21,7 @@ def main():
         config = base / 'asterisk.conf'
         config.write_text(f'''[directories]
 astetcdir => {base}
-astmoddir => /usr/lib/asterisk/modules
+astmoddir => {module_dir}
 astvarlibdir => {base}/lib
 astdbdir => {base}/lib
 astkeydir => {base}/keys

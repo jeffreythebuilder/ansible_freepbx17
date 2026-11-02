@@ -5,29 +5,40 @@ systemd service and a Singapore inbound-trunk dialplan.
 
 **Use a fresh Debian 12 amd64 machine or full VM with systemd. Take a snapshot
 first. This is not an upgrade/migration tool and must not be run on a live PBX.**
+The appliance requires a usable `/dev/ttyS0` and Debian GRUB; serial-console
+configuration is mandatory and is checked before FreePBX installation starts.
 Set a resolvable hostname in `/etc/hostname` and `/etc/hosts`. Ensure working APT
 repositories, DNS, internet access and adequate disk space before starting.
 
-## Safety defaults
+## Preserved appliance features and reliability fixes
 
 - Failures stop the bootstrap without rebooting; source checkouts and installer
   logs are retained. `/root/playbook` is never deleted.
 - Require a reviewed playbook commit SHA. The upstream script is also pinned to
   a commit and verified by SHA256 before execution.
-- Existing SSH authentication settings are left untouched. Root password login
-  is **not** enabled. Establish and test SSH keys or a sudo account yourself.
-- Serial-console/GRUB changes are disabled by default. When enabled, a GRUB
-  drop-in appends console options without replacing existing kernel parameters.
-- No `dnsmasq` installation. DNS/DHCP provisioning is outside this playbook.
-- Chrony is installed by upstream, but NTP serving is disabled (`port 0`) unless
-  client networks are explicitly provided. NTP synchronization still works.
+- Root password SSH login is deliberately enabled (`PermitRootLogin yes` and
+  `PasswordAuthentication yes`). The configuration is syntax-checked before
+  applying and effective root settings are checked before reloading Debian's
+  `ssh` service. Set a strong root password yourself; this playbook does not set,
+  unlock or reset passwords or bypass PAM/account/access restrictions. Test from
+  your actual management client; address-specific `Match` rules may differ.
+- Serial-console setup is mandatory: GRUB, serial-getty, `stty` at 115200 and
+  `setserial baud_base 115200` are retained. A GRUB drop-in appends console options
+  without replacing existing kernel parameters. The UART baud base is a hardware
+  parameter, not the current line speed; unsupported hardware fails explicitly.
+- `dnsmasq` is installed as before. Its site-specific DNS/DHCP configuration is
+  left to the administrator; installing it does not configure DHCP provisioning.
+- Chrony serves NTP with unrestricted `allow`, as intended for this appliance.
+  Restrict network exposure externally if the machine can reach untrusted peers.
+- Certman is force-installed with `fwconsole ma downloadinstall certman --force`,
+  preserving the original behavior. Required failures are no longer ignored.
 - Completion requires successful commands, enabled framework/core/certman
   modules, active core services, an Asterisk response and the custom context
   loaded after `fwconsole reload`.
 
-These defaults do **not** harden an existing installation: previously enabled
-root SSH, dnsmasq and old GRUB edits are not automatically undone. Audit them
-before adopting this version. This playbook does not configure a firewall or
+This preserves your appliance's intended services rather than imposing a new
+security policy. Old GRUB edits are not automatically undone. Audit them before
+adopting this version. This playbook does not configure a firewall or
 complete FreePBX's web setup. Keep the machine on a trusted management network,
 restrict administrative access, and configure provider/SIP/RTP firewall rules
 before exposure. Do not expose an unfinished FreePBX web setup to the internet.
@@ -51,23 +62,11 @@ that has a verified completion record; configuration and health checks run again
 Run only one installation at a time; do not run a direct playbook alongside the
 first-boot service.
 
-Optional overrides, for example `/root/freepbx-vars.yml` (root-owned, mode 0600):
-
-```yaml
-enable_serial_console: true  # Requires a working /dev/ttyS0 and Debian GRUB.
-ntp_allowed_networks:
-  - 192.168.10.0/24          # Replace with your actual LAN; do not use 0.0.0.0/0.
-```
-
-```sh
-ansible-playbook -i localhost, -c local site.yml --extra-vars @/root/freepbx-vars.yml
-```
-
-Only advertise NTP to networks you trust and allow UDP/123 from those networks
-in your firewall. Invalid CIDRs fail before installation. To return to client-only
-NTP, set `ntp_allowed_networks: []` and rerun. Disabling the serial option merely
-stops managing it; remove `/etc/default/grub.d/99-freepbx-serial.cfg`, run
-`update-grub` and disable `serial-getty@ttyS0.service` to undo an earlier opt-in.
+Overrides such as the explicit recovery option below can be placed in a
+root-owned, mode 0600 `/root/freepbx-vars.yml` and passed using
+`--extra-vars @/root/freepbx-vars.yml`. Root password SSH, serial-console setup,
+dnsmasq installation, unrestricted NTP and forced certman installation are
+intentional features, not opt-in features.
 
 ## First-boot service
 
@@ -126,10 +125,13 @@ DIDs from SIP/SIPS `To` headers, including angle-bracketed display-name forms.
 Missing/invalid headers fall back to `from-pstn,${EXTEN},1`. It does not configure
 the trunk, authenticate providers or create FreePBX inbound routes.
 
-Only `+65` plus 8 digits or `65` plus 8 digits is reduced to an 8-digit DID.
-An already-local DID beginning with `65` is unchanged. Caller number/name has
-`+65` removed only when the entire value is an 11-character Singapore number;
-ordinary display names are preserved. Match your inbound routes to the resulting
+The supplied dialplan is used unchanged, including the explicit `h` extension.
+It requires Asterisk's `PJSIP_PARSE_URI` function, even on the legacy SIP path;
+the final health check verifies availability. Only `+65` plus 8 digits or `65`
+plus 8 digits is reduced to an 8-digit DID. An already-local DID beginning with
+`65` is unchanged. Both country-prefix forms are also removed from complete
+Singapore caller numbers and numeric caller-ID names; ordinary display names
+are preserved. Fallback DIDs are normalized too. Match inbound routes to resulting
 8-digit DIDs. Modern FreePBX uses PJSIP; the SIP branch is retained only for older
 channel drivers and cannot fall through into PJSIP handling.
 

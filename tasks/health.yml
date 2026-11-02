@@ -31,6 +31,13 @@
   failed_when: inbound_context.rc != 0 or "[ Context 'from-pstn-sg'" not in inbound_context.stdout
   when: check_custom_dialplan | default(false) | bool
 
+- name: Require PJSIP URI parser used by the inbound dialplan
+  ansible.builtin.command: asterisk -rx 'core show function PJSIP_PARSE_URI'
+  register: pjsip_uri_function
+  changed_when: false
+  failed_when: pjsip_uri_function.rc != 0 or 'PJSIP_PARSE_URI(' not in pjsip_uri_function.stdout
+  when: check_custom_dialplan | default(false) | bool
+
 - name: Read module status after installation or reload
   ansible.builtin.import_tasks: modules.yml
 

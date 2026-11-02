@@ -1,7 +1,5 @@
 ---
 # Override these using --extra-vars @/root/freepbx-vars.yml.
-enable_serial_console: false
-ntp_allowed_networks: []
 # Only opt in after investigating a failed installer and taking a snapshot.
 resume_partial_install: false
 

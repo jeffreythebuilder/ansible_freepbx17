@@ -21,8 +21,7 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_safe_defaults(self):
         defaults = yaml.safe_load((ROOT / 'defaults.yml').read_text())
-        self.assertIs(defaults['enable_serial_console'], False)
-        self.assertEqual(defaults['ntp_allowed_networks'], [])
+        self.assertNotIn('enable_serial_console', defaults)
         self.assertIs(defaults['resume_partial_install'], False)
         self.assertRegex(defaults['freepbx_installer_commit'], r'^[0-9a-f]{40}$')
         self.assertRegex(defaults['freepbx_installer_sha256'], r'^[0-9a-f]{64}$')
@@ -38,11 +37,29 @@ class ConfigurationTests(unittest.TestCase):
         self.assertNotIn('/bin/rm', service)
         self.assertNotIn('reboot', (ROOT / 'bootstrap.sh').read_text().split('echo "Installation completed.')[0].replace('No reboot requested', ''))
 
-    def test_ssh_and_dns_are_not_enabled(self):
-        content = (ROOT / 'bootstrap.sh').read_text() + (ROOT / 'site.yml').read_text()
-        self.assertNotIn('PermitRootLogin yes', content)
-        self.assertNotIn('name: dnsmasq', content)
-        self.assertNotIn('rm -rf', content)
+    def test_intended_appliance_features_are_preserved(self):
+        play = yaml.safe_load((ROOT / 'site.yml').read_text())[0]
+        ssh = (ROOT / 'tasks/ssh.yml').read_text()
+        self.assertIn('PermitRootLogin yes', ssh)
+        self.assertIn('PasswordAuthentication yes', ssh)
+        self.assertIn('validate: /usr/sbin/sshd -t -f %s', ssh)
+        serial = next(t for t in play['tasks'] if t.get('ansible.builtin.import_tasks') == 'tasks/serial.yml')
+        self.assertNotIn('when', serial)
+        content = (ROOT / 'site.yml').read_text()
+        self.assertIn('name: dnsmasq', content)
+        self.assertIn('          allow\n', content)
+        self.assertIn('downloadinstall certman --force', content)
+        serial_config = (ROOT / 'tasks/serial.yml').read_text()
+        self.assertIn('stty -F /dev/ttyS0 speed 115200', serial_config)
+        self.assertIn('setserial /dev/ttyS0 baud_base 115200', serial_config)
+        self.assertNotIn('rm -rf', (ROOT / 'bootstrap.sh').read_text())
+
+    def test_supplied_dialplan_and_hangup_extension_are_installed(self):
+        dialplan = (ROOT / 'files/from-pstn-sg.conf').read_text()
+        self.assertIn('Set(SG_DID=${EXTEN})', dialplan)
+        self.assertIn('PJSIP_PARSE_URI(${SG_URI},user)', dialplan)
+        self.assertIn('exten => h,1,NoOp()', dialplan)
+        self.assertNotIn('CUT(CUT(', dialplan)
 
     def test_upstream_identity_and_completion_guards(self):
         tasks = (ROOT / 'tasks/install.yml').read_text()
@@ -133,7 +150,7 @@ if [[ $name == git && $* == *rev-parse* ]]; then echo "$PLAYBOOK_REF"; fi
 
     def test_extra_vars_file_is_passed_as_one_argument(self):
         config = self.base / 'local vars.yml'
-        config.write_text('enable_serial_console: false\n')
+        config.write_text('resume_partial_install: false\n')
         result = self.run_bootstrap(PLAYBOOK_VARS_FILE=str(config))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f'--extra-vars @{config}', self.commands())

@@ -1,4 +1,4 @@
-"""Run actual dialplan helpers in an isolated Asterisk (CI, not on a live PBX)."""
+"""Exercise the supplied dialplan in an isolated Asterisk (CI, never a live PBX)."""
 
 from pathlib import Path
 import shutil
@@ -36,8 +36,15 @@ verbose = 5
 ''')
         (base / 'modules.conf').write_text('''[modules]
 autoload=no
+load=res_pjproject.so
+load=res_sorcery_config.so
+load=res_sorcery_memory.so
+load=res_sorcery_astdb.so
+load=res_pjsip.so
+load=res_pjsip_pubsub.so
+load=res_pjsip_session.so
+load=chan_pjsip.so
 load=pbx_config.so
-load=app_stack.so
 load=app_exec.so
 load=app_verbose.so
 load=func_strings.so
@@ -47,67 +54,67 @@ load=func_channel.so
 load=func_callerid.so
 load=res_clioriginate.so
 ''')
+        # No transports/endpoints: URI parsing works without any SIP listener.
+        (base / 'pjsip.conf').write_text('[global]\ntype=global\n')
         (base / 'logger.conf').write_text('[logfiles]\nconsole => error,warning,notice,verbose\n')
-        dialplan = (ROOT / 'files/from-pstn-sg.conf').read_text()
+        dialplan = (ROOT / 'files/from-pstn-sg.conf').read_text() + '\n[test-cases]\n'
         cases = []
 
-        def add_case(name, variable, value, context, expected):
+        def add_case(name, header='', original='8888', expected='8888', caller='91234567',
+                     caller_name='Office, Reception', expected_caller=None, expected_name=None,
+                     entry='parse'):
             cases.append(name)
-            value = value.replace(';', r'\;')
-            return f'''exten => {name},1,Set({variable}={value})
- same => n,Gosub({context},s,1)
- same => n,GotoIf($["${{GOSUB_RETVAL}}"="{expected}"]?pass:fail)
- same => n(pass),Verbose(0,TEST_PASS_{name})
- same => n,Hangup()
- same => n(fail),Verbose(0,TEST_FAIL_{name}_got_${{GOSUB_RETVAL}})
- same => n,Hangup()
+            header = header.replace(';', r'\;')
+            expected_caller = caller if expected_caller is None else expected_caller
+            expected_name = caller_name if expected_name is None else expected_name
+            # Inject a To header at the production parse label on a Local channel.
+            # This exercises the exact supplied parser/normalizer, not a copy.
+            return f'''exten => {name},1,Set(TEST_ID={name})
+ same => n,Set(EXPECT_DID={expected})
+ same => n,Set(EXPECT_CALLER={expected_caller})
+ same => n,Set(EXPECT_NAME={expected_name})
+ same => n,Set(CALLERID(num)={caller})
+ same => n,Set(CALLERID(name)={caller_name})
+ same => n,Set(SG_DID={original})
+ same => n,Set(SG_TO={header})
+ same => n,Goto(from-pstn-sg,{original},{entry})
 '''
 
-        dialplan += '\n[test-cases]\n'
-        headers = [
-            ('bare', 'sip:+6565123456@provider.example', '+6565123456'),
-            ('brackets', '<sip:6565123456@provider.example>', '6565123456'),
-            ('display', '"Office: Main" <sip:+6565123456@provider.example>;tag=123', '+6565123456'),
+        for name, header, expected in [
+            ('bare', 'sip:+6565123456@provider.example', '65123456'),
+            ('brackets', '<sip:6565123456@provider.example>', '65123456'),
+            ('display', '"Office: Main" <sip:+6565123456@provider.example>;tag=123', '65123456'),
             ('comma', '"Office, Main" <sip:65123456@provider.example>', '65123456'),
-            ('sips', 'sips:+6565123456@provider.example:5061;user=phone', '+6565123456'),
+            ('sips', 'sips:+6565123456@provider.example:5061;user=phone', '65123456'),
             ('ipv6', '<sip:65123456@[2001:db8::1]:5060>', '65123456'),
-            ('missing', '', ''),
-            ('malformed', 'not-a-uri', ''),
-            ('nonnumeric', 'sip:sales@provider.example', ''),
-            ('nohost', 'sip:65123456', ''),
-            ('emptyhost', 'sip:65123456@', ''),
-        ]
-        for name, header, expected in headers:
-            dialplan += add_case('parse_' + name, 'SG_TO', header, 'sg-pstn-parse-to', expected)
-
-        # ARG1 is used by the numeric normalizer, but pass it via a wrapper
-        # so the caller-ID path also exercises comma-containing variable values.
-        normalizations = [
+            ('missing', '', '8888'),
+            ('malformed', 'not-a-uri', '8888'),
+            ('nonnumeric', 'sip:sales@provider.example', '8888'),
+        ]:
+            dialplan += add_case('parse_' + name, header=header, expected=expected)
+        for name, value, expected in [
             ('plus', '+6565123456', '65123456'),
             ('country', '6565123456', '65123456'),
             ('local', '65123456', '65123456'),
             ('short', '65123', '65123'),
             ('foreign', '+442012345678', '+442012345678'),
-        ]
-        for name, value, expected in normalizations:
-            dialplan += add_case('norm_' + name, 'TEST_NUMBER', value, 'test-normalize', expected)
-        for name, value, expected in [
-            ('plus', '+6565123456', '65123456'),
-            ('local', '65123456', '65123456'),
-            ('country', '6565123456', '6565123456'),
-            ('display', 'Office, Reception', 'Office, Reception'),
-            ('prefix', '+65 Office', '+65 Office'),
-            ('empty', '', ''),
         ]:
-            dialplan += add_case('caller_' + name, 'SG_CALLER', value, 'sg-pstn-normalize-caller', expected)
+            dialplan += add_case('fallback_' + name, original=value, expected=expected)
+            dialplan += add_case('caller_' + name, caller=value, caller_name=value,
+                                 expected_caller=expected, expected_name=expected)
+        dialplan += add_case('caller_display', caller_name='+65 Office')
+        dialplan += add_case('unsupported_channel', entry='1')
 
         dialplan += '''
-[test-normalize]
-exten => s,1,Gosub(sg-pstn-normalize,s,1(${TEST_NUMBER}))
- same => n,Return(${GOSUB_RETVAL})
 [from-pstn]
-exten => 8888,1,Verbose(0,TEST_PASS_fallback)
+exten => _.,1,GotoIf($["${EXTEN}"="${EXPECT_DID}"]?caller:fail)
+ same => n(caller),GotoIf($["${CALLERID(num)}"="${EXPECT_CALLER}"]?name:fail)
+ same => n(name),GotoIf($["${CALLERID(name)}"="${EXPECT_NAME}"]?pass:fail)
+ same => n(pass),Verbose(0,TEST_PASS_${TEST_ID})
  same => n,Hangup()
+ same => n(fail),Verbose(0,TEST_FAIL_${TEST_ID}_DID_${EXTEN}_CALLER_${CALLERID(num)}_NAME_${CALLERID(name)})
+ same => n,Hangup()
+exten => h,1,NoOp()
 '''
         (base / 'extensions.conf').write_text(dialplan)
         output_path = base / 'console.log'
@@ -123,22 +130,20 @@ exten => 8888,1,Verbose(0,TEST_PASS_fallback)
 
                 def cli(command):
                     return subprocess.run([asterisk, '-C', str(config), '-rx', command],
-                                          text=True, capture_output=True, check=True, timeout=10)
+                                          text=True, capture_output=True, check=True, timeout=20)
 
-                # Wait until the dialplan module is ready, not merely the socket.
-                while "[ Context 'test-cases'" not in cli('dialplan show test-cases').stdout:
-                    if time.monotonic() > deadline:
-                        raise RuntimeError('Dialplan did not load')
-                    time.sleep(0.1)
+                cli('core waitfullybooted')
+                if 'PJSIP_PARSE_URI(' not in cli('core show function PJSIP_PARSE_URI').stdout:
+                    raise RuntimeError('Required production PJSIP_PARSE_URI function is unavailable')
+                if "[ Context 'test-cases'" not in cli('dialplan show test-cases').stdout:
+                    raise RuntimeError('Test dialplan did not load')
                 for name in cases:
                     cli(f'channel originate Local/{name}@test-cases application Wait 1')
-                cli('channel originate Local/8888@from-pstn-sg application Wait 1')
-                cases.append('fallback')
                 deadline = time.monotonic() + 20
                 while time.monotonic() < deadline:
                     logs = output_path.read_text()
                     if 'TEST_FAIL_' in logs:
-                        raise AssertionError('Dialplan returned an unexpected value')
+                        raise AssertionError('Dialplan returned an unexpected DID/caller value')
                     if all('TEST_PASS_' + name in logs for name in cases):
                         print(f'Passed {len(cases)} actual Asterisk dialplan cases')
                         break

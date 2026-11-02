@@ -1,0 +1,17 @@
+---
+- name: Inspect required serial device and GRUB support
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - /dev/ttyS0
+    - /etc/default/grub
+    - /usr/sbin/update-grub
+  register: serial_prerequisites
+
+- name: Require a real serial device and Debian GRUB support
+  ansible.builtin.assert:
+    that:
+      - serial_prerequisites.results[0].stat.ischr | default(false)
+      - serial_prerequisites.results[1].stat.isreg | default(false)
+      - serial_prerequisites.results[2].stat.executable | default(false)
+    fail_msg: This deployment requires /dev/ttyS0 and Debian GRUB; serial console is mandatory.

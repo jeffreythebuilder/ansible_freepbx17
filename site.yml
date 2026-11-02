@@ -25,18 +25,10 @@
       ansible.builtin.command: hostname -f
       changed_when: false
 
-    - name: Validate NTP client networks
-      ansible.builtin.command:
-        argv:
-          - python3
-          - -c
-          - import ipaddress, sys; ipaddress.ip_network(sys.argv[1], strict=True)
-          - "{{ item }}"
-      loop: "{{ ntp_allowed_networks }}"
-      changed_when: false
+    - name: Check mandatory serial-console prerequisites before installing FreePBX
+      ansible.builtin.import_tasks: tasks/serial-preflight.yml
 
   tasks:
-    # Leave existing SSH authentication untouched; never enable root passwords.
     - name: Create private installation state directory
       ansible.builtin.file:
         path: /var/lib/freepbx-install
@@ -48,28 +40,25 @@
     - name: Install and validate FreePBX
       ansible.builtin.import_tasks: tasks/install.yml
 
-    - name: Configure optional serial console
+    - name: Enable root password SSH access
+      ansible.builtin.import_tasks: tasks/ssh.yml
+
+    - name: Configure mandatory serial console
       ansible.builtin.import_tasks: tasks/serial.yml
-      when: enable_serial_console | bool
 
-    - name: Remove legacy unrestricted NTP allow directive
-      ansible.builtin.lineinfile:
-        path: /etc/chrony/chrony.conf
-        regexp: '^\s*allow\s*(#.*)?$'
-        state: absent
-      notify: restart chrony
+    - name: Install dnsmasq
+      ansible.builtin.apt:
+        name: dnsmasq
+        state: present
 
-    - name: Restrict NTP serving to explicit client networks
+    - name: Preserve unrestricted NTP serving as intended for this appliance
       ansible.builtin.blockinfile:
         path: /etc/chrony/chrony.conf
         insertafter: EOF
         marker: '# {mark} ANSIBLE MANAGED NTP CLIENT ACCESS'
         block: |
-          port {{ 123 if ntp_allowed_networks | length > 0 else 0 }}
-          deny all
-          {% for network in ntp_allowed_networks %}
-          allow {{ network }}
-          {% endfor %}
+          port 123
+          allow
       notify: restart chrony
 
     - name: Add custom PSTN dialplan (from-pstn-sg)
@@ -82,12 +71,8 @@
         marker: '; {mark} ANSIBLE MANAGED BLOCK - from-pstn-sg'
         block: "{{ lookup('ansible.builtin.file', 'files/from-pstn-sg.conf') }}"
 
-    - name: Inspect installed modules
-      ansible.builtin.import_tasks: tasks/modules.yml
-
-    - name: Install certman when not already enabled
-      ansible.builtin.command: fwconsole ma downloadinstall certman --autoenable --no-interaction
-      when: (freepbx_module_rows | selectattr('0', 'equalto', 'certman') | list | first | default(['', '', '']))[2] != 'Enabled'
+    - name: Download and force-install certman as in the original deployment
+      ansible.builtin.command: fwconsole ma downloadinstall certman --force --autoenable --no-interaction
 
     - name: Fix FreePBX permissions
       ansible.builtin.command: fwconsole chown
@@ -107,6 +92,11 @@
         required_freepbx_modules: [framework, core, certman]
 
   handlers:
+    - name: reload ssh
+      ansible.builtin.service:
+        name: ssh
+        state: reloaded
+
     - name: update grub
       ansible.builtin.command: update-grub
 

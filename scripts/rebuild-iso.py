@@ -50,8 +50,12 @@ def protected_lines(text):
 
 
 def xorriso_path(path):
-    # MSYS2 xorriso accepts C:/... without requiring cygdrive mount aliases.
-    return Path(path).resolve().as_posix()
+    path = Path(path).resolve().as_posix()
+    # A standalone MSYS2 runtime uses /cygdrive drive mounts. Although -indev
+    # also accepts C:/..., -map treats that spelling as a relative path.
+    if os.name == 'nt':
+        return '/cygdrive/' + path[0].lower() + path[2:]
+    return path
 
 
 def run(command):

@@ -168,7 +168,7 @@ The direct-run viewer ends with the playbook or when its controller disappears.
 
 ### Existing machines and ISO images
 
-This repository does not build an ISO. Your ISO must run the updated playbook
+Your custom ISO must run the updated playbook
 with its supplied `ansible.cfg`/callback, or deploy the updated bootstrap and
 monitor files. Merging a change on GitHub does not update code already copied
 into an ISO or installed on a server. If your image pins `PLAYBOOK_REF`, update

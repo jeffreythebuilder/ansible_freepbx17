@@ -83,6 +83,7 @@ class BootstrapTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name)
         self.state = self.base / 'state'
+        self.install_logs = self.base / 'logs'
         self.log = self.base / 'commands.log'
         mockbin = self.base / 'bin'
         mockbin.mkdir()
@@ -90,25 +91,41 @@ class BootstrapTests(unittest.TestCase):
 set -eu
 name=${0##*/}
 printf '%s %s\\n' "$name" "$*" >> "$CALL_LOG"
+echo "$name simulated output"
 if [[ $name == "${FAIL_COMMAND:-}" ]]; then exit 42; fi
 if [[ $name == dpkg ]]; then echo amd64; fi
 if [[ $name == git && $* == *rev-parse* ]]; then echo "$PLAYBOOK_REF"; fi
+if [[ $name == ansible-playbook && ${SKIP_MONITOR_COMPLETION:-} != 1 ]]; then
+    "$REAL_PYTHON" -c 'import json,os,pathlib; p=pathlib.Path(os.environ["FREEPBX_MONITOR_STATE_DIR"])/"status.json"; d=json.loads(p.read_text()); d["playbook_result"]="completed"; p.write_text(json.dumps(d))'
+fi
 '''
+        # stdout of dpkg/rev-parse is parsed by bootstrap, so do not add banners.
+        mock = mock.replace('echo "$name simulated output"', 'if [[ $name != dpkg && $name != git ]]; then echo "$name simulated output"; fi')
         for name in ['apt-get', 'curl', 'git', 'ansible-playbook', 'dpkg']:
             target = mockbin / name
             target.write_text(mock)
             target.chmod(0o755)
         os_release = self.base / 'os-release'
         os_release.write_text('ID=debian\nVERSION_ID=12\n')
+        # Exercise the real monitor, faking root only inside the test CLI process.
+        import sys
+        cli_runner = self.base / 'monitor_cli.py'
+        cli_runner.write_text('import os, runpy, sys\nos.geteuid = lambda: 0\nsys.argv = sys.argv[1:]\nrunpy.run_path(sys.argv[0], run_name="__main__")\n')
+        python_wrapper = mockbin / 'python3'
+        python_wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{cli_runner}" "$@"\n')
+        python_wrapper.chmod(0o755)
         # Redirect only root/platform guards and persistent state into a sandbox.
         script = (ROOT / 'bootstrap.sh').read_text()
         script = script.replace('if [[ $EUID -ne 0 ]]; then', 'if false; then')
         script = script.replace('source /etc/os-release', f'source "{os_release}"')
         script = script.replace('state_dir=/var/lib/freepbx-install', f'state_dir="{self.state}"')
+        script = script.replace('log_dir=/var/log/freepbx-install', f'log_dir="{self.install_logs}"')
+        script = script.replace('monitor=/usr/local/lib/freepbx-install/freepbx_install_monitor.py',
+                                f'monitor="{ROOT / "monitor/freepbx_install_monitor.py"}"')
         self.script = self.base / 'bootstrap.sh'
         self.script.write_text(script)
         self.env = dict(os.environ, PATH=f'{mockbin}:{os.environ["PATH"]}',
-                        CALL_LOG=str(self.log), PLAYBOOK_REF='a' * 40)
+                        CALL_LOG=str(self.log), PLAYBOOK_REF='a' * 40, REAL_PYTHON=sys.executable)
 
     def run_bootstrap(self, **overrides):
         return subprocess.run(['bash', str(self.script)], env=dict(self.env, **overrides),
@@ -124,6 +141,9 @@ if [[ $name == git && $* == *rev-parse* ]]; then echo "$PLAYBOOK_REF"; fi
         self.assertIn('ansible-playbook ', self.commands())
         self.assertNotIn('systemctl', self.commands())
         self.assertTrue(self.script.exists())
+        import json
+        self.assertEqual(json.loads((self.state / 'status.json').read_text())['state'], 'completed')
+        self.assertIn('ansible-playbook simulated output', (self.install_logs / 'install.log').read_text())
 
     def test_each_external_failure_prevents_completion(self):
         for command in ['apt-get', 'curl', 'git', 'ansible-playbook']:
@@ -131,8 +151,20 @@ if [[ $name == git && $* == *rev-parse* ]]; then echo "$PLAYBOOK_REF"; fi
                 result = self.run_bootstrap(FAIL_COMMAND=command)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse((self.state / 'complete').exists())
-                self.assertIn('No reboot requested', result.stderr)
+                self.assertIn('No reboot requested', result.stdout + result.stderr)
                 self.assertTrue(self.script.exists())
+                import json
+                status = json.loads((self.state / 'status.json').read_text())
+                self.assertEqual(status['state'], 'failed')
+                self.assertTrue(status['last_error'])
+                self.assertIn(f'{command} simulated output' if command != 'git' else 'Fetching',
+                              (self.install_logs / 'install.log').read_text())
+
+    def test_missing_callback_completion_cannot_mark_success(self):
+        result = self.run_bootstrap(SKIP_MONITOR_COMPLETION='1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.state / 'complete').exists())
+        self.assertIn('did not report monitored completion', result.stdout)
 
     def test_invalid_or_moving_ref_stops_before_package_changes(self):
         for ref in ['', 'main', 'a' * 39, 'b' * 41]:

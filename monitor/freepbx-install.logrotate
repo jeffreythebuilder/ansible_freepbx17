@@ -1,0 +1,10 @@
+/var/log/freepbx-install/install.log {
+    size 10M
+    rotate 5
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su root root
+}

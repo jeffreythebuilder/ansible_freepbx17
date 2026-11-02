@@ -11,6 +11,15 @@
     - defaults.yml
 
   pre_tasks:
+    - name: Require active monitoring before making installation changes
+      ansible.builtin.assert:
+        that:
+          - ansible_check_mode or lookup('ansible.builtin.env', 'FREEPBX_MONITOR_ACTIVE') == '1'
+        fail_msg: Monitoring callback is unavailable; run from the reviewed checkout with its ansible.cfg.
+
+    - name: Install default installation monitoring
+      ansible.builtin.import_tasks: tasks/monitor.yml
+
     - name: Check supported platform
       ansible.builtin.assert:
         that:

@@ -7,10 +7,11 @@ ConditionPathExists=!/var/lib/freepbx-install/complete
 
 [Service]
 Type=oneshot
-EnvironmentFile=/etc/default/freepbx-install
+EnvironmentFile=-/etc/default/freepbx-install
 ExecStart=/bin/bash /root/bootstrap.sh
 # Only runs after a successful bootstrap. Queue, rather than wait for, reboot.
 ExecStartPost=/usr/bin/systemctl --no-block reboot
+ExecStopPost=/usr/local/sbin/freepbx-install-status --service-result ${SERVICE_RESULT}
 TimeoutStartSec=infinity
 RemainAfterExit=yes
 StandardOutput=journal+console

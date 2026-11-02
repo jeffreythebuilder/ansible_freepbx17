@@ -35,6 +35,9 @@ repositories, DNS, internet access and adequate disk space before starting.
 - Completion requires successful commands, enabled framework/core/certman
   modules, active core services, an Asterisk response and the custom context
   loaded after `fwconsole reload`.
+- Default monitoring records the current stage/task, terminal success/failure,
+  timestamps and last error. Root SSH login notices flag running, failed or
+  interrupted installs; persistent logs remain available after disconnect/reboot.
 
 This preserves your appliance's intended services rather than imposing a new
 security policy. Old GRUB edits are not automatically undone. Audit them before
@@ -49,18 +52,21 @@ As root, clone the repository, check out a **reviewed full commit SHA**, then:
 
 ```sh
 apt-get update
-apt-get install -y ansible git ca-certificates
+apt-get install -y ansible git ca-certificates python3
 git clone https://github.com/jeffreythebuilder/ansible_freepbx17.git
 cd ansible_freepbx17
 git checkout --detach YOUR_REVIEWED_40_CHARACTER_COMMIT_SHA
+bash scripts/install-monitor.sh
 ansible-playbook -i localhost, -c local site.yml
 ```
 
 This does not reboot. Reboot manually after a successful run and verify services,
 inbound/outbound calls and audio. Re-running skips only an upstream installation
 that has a verified completion record; configuration and health checks run again.
-Run only one installation at a time; do not run a direct playbook alongside the
-first-boot service.
+The supplied `ansible.cfg` enables the monitoring callback. Run from this checkout
+(or explicitly set `ANSIBLE_CONFIG` to its config file); the playbook checks that
+monitoring is active before making installation changes. Run only one installation
+at a time; do not run a direct playbook alongside the first-boot service.
 
 Overrides such as the explicit recovery option below can be placed in a
 root-owned, mode 0600 `/root/freepbx-vars.yml` and passed using
@@ -73,6 +79,8 @@ intentional features, not opt-in features.
 From the reviewed checkout, as root:
 
 ```sh
+apt-get install -y python3
+bash scripts/install-monitor.sh
 install -m 0700 bootstrap.sh /root/bootstrap.sh
 install -m 0644 freepbx-install.service /etc/systemd/system/freepbx-install.service
 printf 'PLAYBOOK_REF=%s\n' "$(git rev-parse HEAD)" > /etc/default/freepbx-install
@@ -90,11 +98,58 @@ The commit SHA is stored in that file for auditing. The bootstrap's lock prevent
 two concurrent bootstrap runs. Running the bootstrap directly requires exporting
 `PLAYBOOK_REF`; only the systemd service loads `/etc/default/freepbx-install`.
 
+Install the monitor files **before** enabling the first-boot service so even an
+early APT/Git/network failure has a status command and SSH notice available.
+Bootstrap records a missing/invalid deployment revision as a monitored failure;
+systemd also records abnormal termination or a failed reboot request.
+
+## Check from any SSH session
+
+As root (or prefix the commands with `sudo`):
+
+```sh
+freepbx-install-status          # State, current stage/task, last error and log paths
+freepbx-install-status --follow # Live bootstrap/Ansible AND upstream installer logs
+freepbx-install-status --json   # Machine-readable status
+```
+
+`--follow` discovers the upstream log automatically when FreePBX starts, even if
+you attach during APT/package installation. Ctrl-C or an SSH disconnect stops
+only the viewer, not the installation. Multiple SSH sessions can view it at once.
+**No screen session is needed:** systemd owns the first-boot process independently
+of SSH. A directly launched `ansible-playbook` still belongs to its shell; use the
+systemd service when installation must survive disconnects.
+
+The state is `RUNNING`, `FAILED`, `COMPLETED`, `INTERRUPTED` (runner died or the
+machine rebooted mid-install), `NOT_STARTED`, or `UNKNOWN` if state cannot be read.
+Interruption detection checks both the boot ID and process start time, not just a
+PID that could have been reused. A root interactive SSH login displays a brief
+notice only for running/failed/interrupted/unknown states. This uses
+`/etc/profile.d/freepbx-install.sh` for standard login shells; it stays silent for
+non-interactive SSH commands, SCP/SFTP, non-root users and completed installs.
+Non-root administrators can still inspect details using `sudo`.
+
+Persistent files:
+
+- `/var/log/freepbx-install/install.log`: combined bootstrap/Ansible output. For
+  direct playbook runs, the callback records task/results into the same file.
+- `/var/log/pbx/freepbx17-install-*.log`: upstream FreePBX's detailed progress.
+- `/var/lib/freepbx-install/status.json`: current/last attempt and last error.
+
+Logs/status are root-only because installer output can contain sensitive data.
+The callback respects Ansible `no_log`; it records only a censored error for
+private tasks. The combined log has a logrotate policy (10 MB threshold, five
+rotations). Upstream log retention remains controlled by upstream. Each new
+attempt resets status while preserving existing log history. This monitors
+**installation**, not ongoing PBX uptime, and does not send email/webhook alerts.
+
 ## Failure and recovery
 
 Inspect:
 
 ```sh
+freepbx-install-status
+freepbx-install-status --follow
 journalctl -u freepbx-install.service -b --no-pager
 ls -l /var/log/pbx/
 ls -l /var/lib/freepbx-install/
@@ -144,7 +199,10 @@ still come from live upstream repositories; this is not a fully reproducible
 package snapshot. Upstream also controls repository trust and system-wide
 configuration changes; pinning the wrapper does not audit all its dependencies.
 
-CI checks Bash syntax/ShellCheck, Ansible syntax, regression tests and dialplan
-behavior in an isolated Asterisk instance. These do not substitute for a complete
+CI checks Bash syntax/ShellCheck, Ansible syntax, monitor/bootstrap regression
+tests, actual Ansible callback behavior (including failed/private tasks) and
+dialplan behavior in an isolated Asterisk instance. Ubuntu 22.04 is only the
+GitHub-hosted test runner, chosen for its packaged Asterisk; deployment targets
+remain Debian 12. These checks do not substitute for a complete
 Debian 12 installation test and real provider call/audio testing in a disposable
 VM before production use.

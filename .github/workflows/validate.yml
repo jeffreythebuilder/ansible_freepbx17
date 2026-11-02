@@ -24,9 +24,10 @@ jobs:
           bash -n bootstrap.sh
           bash -n scripts/install-monitor.sh
           bash -n scripts/setup-first-boot.sh
+          bash -n scripts/run-upstream-installer.sh
           sh -n monitor/freepbx-install-status
           sh -n monitor/freepbx-install-notice.sh
-          shellcheck bootstrap.sh scripts/install-monitor.sh scripts/setup-first-boot.sh monitor/freepbx-install-status monitor/freepbx-install-notice.sh
+          shellcheck bootstrap.sh scripts/install-monitor.sh scripts/setup-first-boot.sh scripts/run-upstream-installer.sh monitor/freepbx-install-status monitor/freepbx-install-notice.sh
       - name: Check Ansible
         run: ansible-playbook -i localhost, -c local site.yml --syntax-check
       - name: Run regression tests

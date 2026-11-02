@@ -16,6 +16,11 @@ repositories, DNS, internet access and adequate disk space before starting.
   logs are retained. `/root/playbook` is never deleted.
 - Require a reviewed playbook commit SHA. The upstream script is also pinned to
   a commit and verified by SHA256 before execution.
+- Keep private bootstrap state/logs under `umask 077`, but run the upstream
+  system installer in a separate `umask 022` wrapper. Public APT keyrings must be
+  readable by `_apt`; an existing `freepbx.gpg` is normalized to mode 0644 before
+  APT runs. Signature checks remain enabled. Upstream logs stay in a private
+  root-owned directory, and the checksum-verified vendor script is not edited.
 - Root password SSH login is deliberately enabled (`PermitRootLogin yes` and
   `PasswordAuthentication yes`). The configuration is syntax-checked before
   applying and effective root settings are checked before reloading Debian's

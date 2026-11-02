@@ -138,6 +138,7 @@ class BootstrapTests(unittest.TestCase):
         self.base = Path(self.tmp.name)
         self.state = self.base / 'state'
         self.install_logs = self.base / 'logs'
+        self.public_keyring = self.base / 'freepbx.gpg'
         self.log = self.base / 'commands.log'
         mockbin = self.base / 'bin'
         mockbin.mkdir()
@@ -179,6 +180,7 @@ fi
         script = script.replace('source /etc/os-release', f'source "{os_release}"')
         script = script.replace('state_dir=/var/lib/freepbx-install', f'state_dir="{self.state}"')
         script = script.replace('log_dir=/var/log/freepbx-install', f'log_dir="{self.install_logs}"')
+        script = script.replace('freepbx_keyring=/etc/apt/trusted.gpg.d/freepbx.gpg', f'freepbx_keyring="{self.public_keyring}"')
         script = script.replace('monitor=/usr/local/lib/freepbx-install/freepbx_install_monitor.py',
                                 f'monitor="{ROOT / "monitor/freepbx_install_monitor.py"}"')
         script = script.replace('wait_for_network.py" --timeout 120', 'wait_for_network.py" --timeout 0')
@@ -236,6 +238,26 @@ fi
         data = json.loads((self.state / 'status.json').read_text())
         self.assertEqual(data['state'], 'failed')
         self.assertIn('Waiting for a network address', data['stage'])
+
+    def test_existing_public_keyring_is_readable_without_relaxing_private_logs(self):
+        self.public_keyring.write_bytes(b'public key fixture')
+        self.public_keyring.chmod(0o600)
+        result = self.run_bootstrap()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.public_keyring.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(self.public_keyring.read_bytes(), b'public key fixture')
+        self.assertEqual((self.state / 'status.json').stat().st_mode & 0o777, 0o600)
+        self.assertEqual((self.install_logs / 'install.log').stat().st_mode & 0o777, 0o600)
+
+    def test_keyring_symlink_does_not_change_a_private_target(self):
+        private = self.base / 'private-file'
+        private.write_text('private')
+        private.chmod(0o600)
+        self.public_keyring.symlink_to(private)
+        result = self.run_bootstrap()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('apt-get', self.commands())
+        self.assertEqual(private.stat().st_mode & 0o777, 0o600)
 
     def test_invalid_or_moving_ref_stops_before_package_changes(self):
         for ref in ['', 'main', 'a' * 39, 'b' * 41]:

@@ -39,6 +39,9 @@
           - '120'
       changed_when: false
 
+    - name: Normalize existing public repository keyring permissions before APT
+      ansible.builtin.import_tasks: tasks/apt-keyring.yml
+
     - name: Check hostname resolution required by the upstream installer
       ansible.builtin.command: hostname -f
       changed_when: false

@@ -31,6 +31,27 @@ class InstallerConfigurationTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'requires Linux file modes and Bash')
 class InstallerUmaskTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('gpg'), 'requires real GnuPG for dearmor regression')
+    def test_real_gpg_dearmor_public_output_is_readable_under_vendor_wrapper(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            home = base / 'gnupg'
+            home.mkdir(mode=0o700)
+            armored = subprocess.run(['gpg', '--no-options', '--homedir', str(home), '--batch', '--enarmor'],
+                                     input=b'public permission regression fixture', capture_output=True, timeout=15)
+            self.assertEqual(armored.returncode, 0, armored.stderr.decode(errors='replace'))
+            source = base / 'public.asc'
+            source.write_bytes(armored.stdout)
+            output = base / 'public.gpg'
+            vendor = base / 'gpg-vendor.sh'
+            vendor.write_text('exec gpg --no-options --homedir "$1" --batch --yes --dearmor --output "$3" "$2"\n')
+            result = subprocess.run(['bash', '-c', 'umask 077\nexec bash "$@"', 'test',
+                                     str(ROOT / 'scripts/run-upstream-installer.sh'), str(vendor),
+                                     str(home), str(source), str(output)], capture_output=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+            self.assertEqual(output.read_bytes(), b'public permission regression fixture')
+            self.assertEqual(output.stat().st_mode & 0o777, 0o644)
+
     def test_vendor_public_files_use_normal_permissions_but_parent_stays_private(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

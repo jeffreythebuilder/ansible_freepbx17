@@ -2,7 +2,12 @@
 set -Eeuo pipefail
 umask 077
 
-trap 'status=$?; echo "Installation failed at line $LINENO (exit $status). No reboot requested; bootstrap and logs retained." >&2; exit "$status"' ERR
+report_failure() {
+    local status=$1
+    echo "Installation failed at line $2 (exit $status). No reboot requested; bootstrap and logs retained." >&2
+    exit "$status"
+}
+trap 'report_failure "$?" "$LINENO"' ERR
 
 if [[ $EUID -ne 0 ]]; then
     echo "Run this script as root." >&2

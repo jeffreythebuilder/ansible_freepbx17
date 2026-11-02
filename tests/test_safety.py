@@ -138,6 +138,7 @@ class BootstrapTests(unittest.TestCase):
         self.base = Path(self.tmp.name)
         self.state = self.base / 'state'
         self.install_logs = self.base / 'logs'
+        self.public_keyring = self.base / 'freepbx.gpg'
         self.log = self.base / 'commands.log'
         mockbin = self.base / 'bin'
         mockbin.mkdir()
@@ -149,13 +150,18 @@ echo "$name simulated output"
 if [[ $name == "${FAIL_COMMAND:-}" ]]; then exit 42; fi
 if [[ $name == dpkg ]]; then echo amd64; fi
 if [[ $name == git && $* == *rev-parse* ]]; then echo "$PLAYBOOK_REF"; fi
+if [[ $name == ip ]]; then
+    if [[ ${FAIL_NETWORK:-0} == 1 ]]; then echo '[]';
+    elif [[ $* == *address* ]]; then echo '[{"ifname":"eth0","addr_info":[{"scope":"global","local":"192.0.2.10"}]}]';
+    else echo '[{"dev":"eth0"}]'; fi
+fi
 if [[ $name == ansible-playbook && ${SKIP_MONITOR_COMPLETION:-} != 1 ]]; then
     "$REAL_PYTHON" -c 'import json,os,pathlib; p=pathlib.Path(os.environ["FREEPBX_MONITOR_STATE_DIR"])/"status.json"; d=json.loads(p.read_text()); d["playbook_result"]="completed"; p.write_text(json.dumps(d))'
 fi
 '''
         # stdout of dpkg/rev-parse is parsed by bootstrap, so do not add banners.
-        mock = mock.replace('echo "$name simulated output"', 'if [[ $name != dpkg && $name != git ]]; then echo "$name simulated output"; fi')
-        for name in ['apt-get', 'curl', 'git', 'ansible-playbook', 'dpkg']:
+        mock = mock.replace('echo "$name simulated output"', 'if [[ $name != dpkg && $name != git && $name != ip ]]; then echo "$name simulated output"; fi')
+        for name in ['apt-get', 'curl', 'git', 'ansible-playbook', 'dpkg', 'ip']:
             target = mockbin / name
             target.write_text(mock)
             target.chmod(0o755)
@@ -174,8 +180,10 @@ fi
         script = script.replace('source /etc/os-release', f'source "{os_release}"')
         script = script.replace('state_dir=/var/lib/freepbx-install', f'state_dir="{self.state}"')
         script = script.replace('log_dir=/var/log/freepbx-install', f'log_dir="{self.install_logs}"')
+        script = script.replace('freepbx_keyring=/etc/apt/trusted.gpg.d/freepbx.gpg', f'freepbx_keyring="{self.public_keyring}"')
         script = script.replace('monitor=/usr/local/lib/freepbx-install/freepbx_install_monitor.py',
                                 f'monitor="{ROOT / "monitor/freepbx_install_monitor.py"}"')
+        script = script.replace('wait_for_network.py" --timeout 120', 'wait_for_network.py" --timeout 0')
         self.script = self.base / 'bootstrap.sh'
         self.script.write_text(script)
         self.env = dict(os.environ, PATH=f'{mockbin}:{os.environ["PATH"]}',
@@ -219,6 +227,37 @@ fi
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.state / 'complete').exists())
         self.assertIn('did not report monitored completion', result.stdout)
+
+    def test_dhcp_timeout_is_visible_and_stops_before_apt(self):
+        result = self.run_bootstrap(FAIL_NETWORK='1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('apt-get', self.commands())
+        self.assertFalse((self.state / 'complete').exists())
+        self.assertIn('DHCP wait expired', result.stdout)
+        import json
+        data = json.loads((self.state / 'status.json').read_text())
+        self.assertEqual(data['state'], 'failed')
+        self.assertIn('Waiting for a network address', data['stage'])
+
+    def test_existing_public_keyring_is_readable_without_relaxing_private_logs(self):
+        self.public_keyring.write_bytes(b'public key fixture')
+        self.public_keyring.chmod(0o600)
+        result = self.run_bootstrap()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.public_keyring.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(self.public_keyring.read_bytes(), b'public key fixture')
+        self.assertEqual((self.state / 'status.json').stat().st_mode & 0o777, 0o600)
+        self.assertEqual((self.install_logs / 'install.log').stat().st_mode & 0o777, 0o600)
+
+    def test_keyring_symlink_does_not_change_a_private_target(self):
+        private = self.base / 'private-file'
+        private.write_text('private')
+        private.chmod(0o600)
+        self.public_keyring.symlink_to(private)
+        result = self.run_bootstrap()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('apt-get', self.commands())
+        self.assertEqual(private.stat().st_mode & 0o777, 0o600)
 
     def test_invalid_or_moving_ref_stops_before_package_changes(self):
         for ref in ['', 'main', 'a' * 39, 'b' * 41]:

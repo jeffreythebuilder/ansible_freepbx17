@@ -174,9 +174,83 @@ class MonitorTests(unittest.TestCase):
         self.assertIn('CURRENT_ATTEMPT', ''.join(output))
         self.assertNotIn('OLD_ATTEMPT', ''.join(output))
 
+    def test_new_attempt_clears_previous_console_stop_marker(self):
+        self.monitor.prepare()
+        marker = self.monitor.directory / 'console-stop'
+        marker.touch()
+        self.begin()
+        self.assertFalse(marker.exists())
+
+    def test_ssh_login_streams_automatically_and_returns_when_finished(self):
+        self.begin()
+
+        def follow(**kwargs):
+            self.assertTrue(kwargs['current_attempt'])
+            self.assertFalse(kwargs['stop']())
+            self.monitor.finish('completed')
+            self.assertTrue(kwargs['stop']())
+
+        with mock.patch.object(MODULE.Monitor, 'is_alive', return_value=True), \
+                mock.patch.object(MODULE.Monitor, 'follow', side_effect=follow) as viewer:
+            result, output = self.cli('--login')
+        self.assertEqual(result, 0)
+        viewer.assert_called_once()
+        self.assertIn('Showing installation progress automatically', output)
+        self.assertIn('COMPLETED', output)
+        self.assertIn('Returning to the shell', output)
+
+    def test_ssh_viewer_ctrl_c_does_not_change_installation_state(self):
+        self.begin()
+        before = self.monitor.path.read_text()
+        with mock.patch.object(MODULE.Monitor, 'is_alive', return_value=True), \
+                mock.patch.object(MODULE.Monitor, 'follow', side_effect=KeyboardInterrupt):
+            result, output = self.cli('--login')
+        self.assertEqual(result, 0)
+        self.assertIn('installation has not been stopped', output)
+        self.assertEqual(self.monitor.path.read_text(), before)
+
+    def test_ssh_login_after_failure_shows_recent_output_without_waiting(self):
+        self.begin()
+        self.monitor.finish('failed', 'test failure')
+
+        def follow(**kwargs):
+            self.assertTrue(kwargs['stop']())
+
+        with mock.patch.object(MODULE.Monitor, 'follow', side_effect=follow):
+            _, output = self.cli('--login')
+        self.assertIn('FAILED', output)
+        self.assertIn('Recent installation output', output)
+
+    def test_ssh_login_is_quiet_without_an_active_installation(self):
+        self.assertEqual(self.cli('--login')[1], '')
+        self.begin()
+        self.monitor.finish('completed')
+        self.assertEqual(self.cli('--login')[1], '')
+
 
 @unittest.skipUnless(os.name == 'posix', 'requires Linux nonblocking TTY support')
 class ConsoleMirrorTests(unittest.TestCase):
+    def test_physical_progress_uses_tty1_and_requests_that_visible_vt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            monitor = MODULE.Monitor(Path(directory) / 'state', Path(directory) / 'log')
+            import stat
+            with mock.patch.object(MODULE.os, 'open', return_value=17), \
+                    mock.patch.object(MODULE.os, 'fstat', return_value=mock.Mock(st_mode=stat.S_IFCHR)), \
+                    mock.patch.object(MODULE.os, 'close') as close, \
+                    mock.patch.object(MODULE.fcntl, 'ioctl') as ioctl:
+                monitor.activate_progress_console()
+            ioctl.assert_called_once_with(17, 0x5606, 1)
+            close.assert_called_once_with(17)
+            self.assertEqual(MODULE.ConsoleMirror(lambda message: None).devices, ('/dev/tty1', '/dev/ttyS0'))
+
+    def test_unavailable_physical_console_is_logged_not_fatal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            monitor = MODULE.Monitor(Path(directory) / 'state', Path(directory) / 'log')
+            with mock.patch.object(MODULE.os, 'open', side_effect=OSError('no virtual console')), \
+                    mock.patch.object(monitor, 'append_log') as warning:
+                monitor.activate_progress_console()
+            self.assertIn('Could not select physical progress console tty1', warning.call_args.args[0])
+
     def test_real_bytes_reach_both_independent_ttys(self):
         import pty
         import select
@@ -230,6 +304,88 @@ class ConsoleMirrorTests(unittest.TestCase):
             mirror.close()
             self.assertEqual(path.read_text(), 'must remain untouched')
             self.assertEqual(len(warnings), 2)
+
+
+@unittest.skipUnless(os.name == 'posix', 'requires Linux Bash login-shell semantics')
+class LoginHookTests(unittest.TestCase):
+    def run_hook(self, interactive=True, ssh=True, root=True, viewer_exit=0):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            helper = base / 'status'
+            helper.write_text('#!/bin/sh\nprintf "AUTO:%s\\n" "$*"\nexit "${VIEW_EXIT:-0}"\n')
+            helper.chmod(0o755)
+            profile = base / 'profile.sh'
+            profile.write_text((ROOT / 'monitor/freepbx-install-notice.sh').read_text().replace(
+                '/usr/local/sbin/freepbx-install-status', str(helper)))
+            env = dict(os.environ, PROFILE=str(profile), VIEW_EXIT=str(viewer_exit))
+            env.pop('SSH_CONNECTION', None)
+            env.pop('SSH_TTY', None)
+            if ssh:
+                env['SSH_CONNECTION'] = 'test connection'
+            command = f"id() {{ printf '{0 if root else 1000}\\n'; }}; . \"$PROFILE\"; printf 'SHELL_READY\\n'"
+            return subprocess.run(['bash', '--noprofile', '--norc', '-ic' if interactive else '-c', command],
+                                  env=env, text=True, capture_output=True, timeout=10)
+
+    def test_root_interactive_ssh_login_starts_progress_without_user_command(self):
+        result = self.run_hook()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('AUTO:--login', result.stdout)
+        self.assertIn('SHELL_READY', result.stdout)
+
+    def test_exiting_viewer_does_not_abort_login_shell(self):
+        result = self.run_hook(viewer_exit=130)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('SHELL_READY', result.stdout)
+
+    def test_noninteractive_nonssh_and_nonroot_sessions_are_not_attached(self):
+        for arguments in [dict(interactive=False), dict(ssh=False), dict(root=False)]:
+            with self.subTest(arguments=arguments):
+                result = self.run_hook(**arguments)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn('AUTO:', result.stdout)
+
+
+@unittest.skipUnless(importlib.util.find_spec('ansible'), 'requires Ansible callback framework')
+class CallbackViewerTests(unittest.TestCase):
+    def test_direct_playbook_starts_and_stops_console_viewer_automatically(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env = dict(FREEPBX_MONITOR_STATE_DIR=str(Path(directory) / 'state'),
+                       FREEPBX_MONITOR_LOG_DIR=str(Path(directory) / 'log'))
+            with mock.patch.dict(os.environ, env):
+                os.environ.pop('FREEPBX_MONITOR_CAPTURED', None)
+                spec = importlib.util.spec_from_file_location('callback_viewer_test', ROOT / 'callback_plugins/freepbx_monitor.py')
+                plugin = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(plugin)
+                callback = plugin.CallbackModule()
+                child = mock.Mock()
+                child.wait.return_value = 0
+                with mock.patch.object(plugin.context, 'CLIARGS', {'check': False}), \
+                        mock.patch.object(plugin.os, 'geteuid', return_value=0), \
+                        mock.patch.object(plugin.subprocess, 'Popen', return_value=child) as launch:
+                    callback.v2_playbook_on_start(None)
+                    self.assertIn('--mirror-consoles', launch.call_args.args[0])
+                    self.assertTrue(launch.call_args.kwargs['close_fds'])
+                    callback.v2_playbook_on_stats(mock.Mock(processed={}))
+                child.wait.assert_called_once_with(timeout=3)
+                self.assertTrue((callback.monitor.directory / 'console-stop').exists())
+                self.assertEqual(callback.monitor.read()['state'], 'completed')
+
+    def test_bootstrap_does_not_get_a_duplicate_console_viewer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env = dict(FREEPBX_MONITOR_STATE_DIR=str(Path(directory) / 'state'),
+                       FREEPBX_MONITOR_LOG_DIR=str(Path(directory) / 'log'), FREEPBX_MONITOR_CAPTURED='1')
+            with mock.patch.dict(os.environ, env):
+                spec = importlib.util.spec_from_file_location('callback_bootstrap_test', ROOT / 'callback_plugins/freepbx_monitor.py')
+                plugin = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(plugin)
+                callback = plugin.CallbackModule()
+                callback.monitor.begin(os.getpid(), 'bootstrap')
+                with mock.patch.object(plugin.context, 'CLIARGS', {'check': False}), \
+                        mock.patch.object(plugin.subprocess, 'Popen') as launch:
+                    callback.v2_playbook_on_start(None)
+                    callback.v2_playbook_on_stats(mock.Mock(processed={}))
+                launch.assert_not_called()
+                self.assertEqual(callback.monitor.read()['state'], 'running')
 
 
 @unittest.skipUnless(shutil.which('ansible-playbook'), 'requires Ansible on the Linux CI runner')

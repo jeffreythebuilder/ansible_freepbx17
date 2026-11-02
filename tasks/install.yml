@@ -80,12 +80,21 @@
         group: root
         mode: '0600'
 
+    - name: Keep upstream installer logs private under the normal vendor umask
+      ansible.builtin.file:
+        path: /var/log/pbx
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
     # --skipversion is safe here because get_url checks the pinned SHA256.
     # Otherwise upstream can exit 0 without installing when master changes.
     - name: Run pinned FreePBX installer
       ansible.builtin.command:
         argv:
           - bash
+          - "{{ playbook_dir }}/scripts/run-upstream-installer.sh"
           - /var/lib/freepbx-install/sng_freepbx_debian_install.sh
           - --skipversion
       environment:

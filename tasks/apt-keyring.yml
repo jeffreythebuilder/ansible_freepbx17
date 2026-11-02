@@ -1,0 +1,17 @@
+---
+- name: Inspect an existing FreePBX public APT keyring
+  ansible.builtin.stat:
+    path: /etc/apt/trusted.gpg.d/freepbx.gpg
+  register: freepbx_apt_keyring
+
+- name: Refuse unexpected public-keyring paths
+  ansible.builtin.assert:
+    that:
+      - not freepbx_apt_keyring.stat.exists or (freepbx_apt_keyring.stat.isreg | default(false) and not freepbx_apt_keyring.stat.islnk | default(false))
+    fail_msg: FreePBX's public APT keyring must be a regular file, not a symlink or directory.
+
+- name: Ensure an existing public keyring is readable by APT sandbox user
+  ansible.builtin.file:
+    path: /etc/apt/trusted.gpg.d/freepbx.gpg
+    mode: '0644'
+  when: freepbx_apt_keyring.stat.exists

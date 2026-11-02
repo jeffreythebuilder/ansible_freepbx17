@@ -16,6 +16,11 @@ repositories, DNS, internet access and adequate disk space before starting.
   logs are retained. `/root/playbook` is never deleted.
 - Require a reviewed playbook commit SHA. The upstream script is also pinned to
   a commit and verified by SHA256 before execution.
+- Keep private bootstrap state/logs under `umask 077`, but run the upstream
+  system installer in a separate `umask 022` wrapper. Public APT keyrings must be
+  readable by `_apt`; an existing `freepbx.gpg` is normalized to mode 0644 before
+  APT runs. Signature checks remain enabled. Upstream logs stay in a private
+  root-owned directory, and the checksum-verified vendor script is not edited.
 - Root password SSH login is deliberately enabled (`PermitRootLogin yes` and
   `PasswordAuthentication yes`). The configuration is syntax-checked before
   applying and effective root settings are checked before reloading Debian's
@@ -40,11 +45,13 @@ repositories, DNS, internet access and adequate disk space before starting.
   modules, active core services, an Asterisk response, a non-error web-application
   response and the custom context loaded after `fwconsole reload`.
 - Default monitoring records the current stage/task, terminal success/failure,
-  timestamps and last error. Root SSH login notices flag running, failed or
-  interrupted installs; persistent logs remain available after disconnect/reboot.
-- First-boot/bootstrap output automatically streams to **both the physical
-  display (`/dev/tty0`) and serial console (`/dev/ttyS0`)**, including FreePBX's
-  detailed upstream log once it appears. Journal and disk logs are retained too.
+  timestamps and last error. Root SSH logins automatically show live progress
+  while installation runs, or recent output after failed/interrupted runs.
+  Persistent logs remain available after disconnect/reboot.
+- Both direct playbook and bootstrap runs automatically stream to **the physical
+  text console (`/dev/tty1`) and serial console (`/dev/ttyS0`)**, including the
+  upstream log once it appears. The viewer requests VT1 so output is not hidden
+  behind a different virtual console/graphical screen. Disk logs remain available.
 
 This preserves your appliance's intended services rather than imposing a new
 security policy. Old GRUB edits are not automatically undone. Audit them before
@@ -59,7 +66,7 @@ As root, clone the repository, check out a **reviewed full commit SHA**, then:
 
 ```sh
 apt-get update
-apt-get install -y ansible git ca-certificates python3
+apt-get install -y ansible git ca-certificates python3 iproute2
 git clone https://github.com/jeffreythebuilder/ansible_freepbx17.git
 cd ansible_freepbx17
 git checkout --detach YOUR_REVIEWED_40_CHARACTER_COMMIT_SHA
@@ -86,16 +93,14 @@ intentional features, not opt-in features.
 From the reviewed checkout, as root:
 
 ```sh
-apt-get install -y python3
-bash scripts/install-monitor.sh
-install -m 0700 bootstrap.sh /root/bootstrap.sh
-install -m 0644 freepbx-install.service /etc/systemd/system/freepbx-install.service
-printf 'PLAYBOOK_REF=%s\n' "$(git rev-parse HEAD)" > /etc/default/freepbx-install
-chmod 0600 /etc/default/freepbx-install
+apt-get install -y python3 iproute2
+bash scripts/setup-first-boot.sh "$(git rev-parse HEAD)"
 # Optionally add: PLAYBOOK_VARS_FILE=/root/freepbx-vars.yml
-systemctl daemon-reload
-systemctl enable freepbx-install.service
 ```
+
+The setup script installs all monitor/bootstrap/service files and pins the
+revision **before** enabling the service. Existing extra-vars settings are
+preserved. It does not start installation or reboot the machine.
 
 Start it on next boot, or run `systemctl start freepbx-install.service` now.
 **A successful service run automatically reboots the machine.** Failure never
@@ -106,13 +111,20 @@ two concurrent bootstrap runs. Running the bootstrap directly requires exporting
 `PLAYBOOK_REF`; only the systemd service loads `/etc/default/freepbx-install`.
 
 Install the monitor files **before** enabling the first-boot service so even an
-early APT/Git/network failure has a status command and SSH notice available.
+early APT/Git/network failure has a status command and SSH progress hook available.
 Bootstrap records a missing/invalid deployment revision as a monitored failure;
 systemd also records abnormal termination or a failed reboot request.
 
 ## Check from any SSH session
 
 As root (or prefix the commands with `sudo`):
+
+**No monitoring command is needed on a new root SSH login while installation is
+running.** Live progress appears automatically. Completion/failure returns you
+to the shell; Ctrl-C returns to the shell without stopping installation. If the
+installation already failed or was interrupted, recent output is shown once.
+
+Commands for an already-open session or further inspection:
 
 ```sh
 freepbx-install-status          # State, current stage/task, last error and log paths
@@ -130,33 +142,59 @@ systemd service when installation must survive disconnects.
 The state is `RUNNING`, `FAILED`, `COMPLETED`, `INTERRUPTED` (runner died or the
 machine rebooted mid-install), `NOT_STARTED`, or `UNKNOWN` if state cannot be read.
 Interruption detection checks both the boot ID and process start time, not just a
-PID that could have been reused. A root interactive SSH login displays a brief
-notice only for running/failed/interrupted/unknown states. This uses
+PID that could have been reused. A root interactive SSH login automatically
+streams running-install progress, or shows recent failed/interrupted output.
+Unknown status produces a short error without starting a viewer. This uses
 `/etc/profile.d/freepbx-install.sh` for standard login shells; it stays silent for
 non-interactive SSH commands, SCP/SFTP, non-root users and completed installs.
-Non-root administrators can still inspect details using `sudo`.
+Non-root administrators can still inspect details using `sudo`. The login hook
+applies to new SSH logins; it does not inject output into already-open shells or
+start the installer itself. Completed installations stay quiet.
 
 ### Physical display and serial console
 
-The bootstrap mirrors the current attempt to `tty0` (the active Linux virtual
-console on the VGA/HDMI display) and `ttyS0` concurrently. Nothing needs to be
+Both bootstrap and direct root `ansible-playbook` runs start the console viewer
+automatically. It requests Linux VT1 and mirrors the current attempt to `tty1`
+(the VGA/HDMI text progress screen) and `ttyS0` concurrently. Nothing needs to be
 typed on either console. GRUB/serial-getty settings remain unchanged. The
 systemd service writes to the journal rather than also writing `/dev/console`,
 which avoids duplicating output on whichever device is the primary console.
-This requires a Linux text console; a graphical desktop need not show `tty0`.
+This requires a Linux virtual console. If switching to VT1 is unsupported or
+denied, a warning is logged; serial/disk output continue. The viewer does not
+wait for a console login, and it never stops the installer when a display fails.
 
 Console mirroring is a separate nonblocking viewer, so an unplugged, unavailable
 or flow-controlled display cannot stall installation. If a console cannot keep
 up, its bounded buffer may drop older display output; a warning is recorded and
 the full output remains in the persistent logs. Historical attempts are not
-replayed on the consoles at the start of a new attempt. These automatic console
-streams apply to bootstrap/service runs; a manual `ansible-playbook` still prints
-to its invoking terminal and records its task/results in the combined log.
+replayed on the consoles at the start of a new attempt. A direct playbook also
+prints to its invoking terminal and records task/results in the combined log.
+The direct-run viewer ends with the playbook or when its controller disappears.
+
+### Existing machines and ISO images
+
+Your custom ISO must run the updated playbook
+with its supplied `ansible.cfg`/callback, or deploy the updated bootstrap and
+monitor files. Merging a change on GitHub does not update code already copied
+into an ISO or installed on a server. If your image pins `PLAYBOOK_REF`, update
+that to the newly reviewed commit when rebuilding/updating the image.
+See [ISO integration](iso/README.md) for a complete offline first-boot payload and
+a late-command example. The old two-file download hook is not sufficient.
+
+For an existing checkout, run `bash scripts/install-monitor.sh` once as root to
+deploy updated SSH helper files, then reconnect. New playbook runs start console
+viewing automatically; an already-running older controller is not replaced by
+updating these files. Do not restart a partial installation just to change its
+display. Inspect its status/logs first.
 
 ### Network outages and installation correctness
 
 The selected policy is **fail after short retries**, not wait indefinitely.
-Bootstrap uses bounded APT/HTTPS retries; repository-update errors are fatal
+Bootstrap and direct playbook runs first allow up to 120 seconds for an assigned
+global IPv4/IPv6 address and a default route on that interface. This prevents
+starting package downloads just because `network-online.target` was reached
+before DHCP finished. It does not prove DNS or internet access; download checks
+still need to succeed. Bootstrap uses bounded APT/HTTPS retries; update errors are fatal
 instead of being accepted with stale package lists. The upstream installer gets
 private APT/wget timeout/retry configuration, without changing the machine's
 global package-manager configuration or modifying the checksum-verified script.
@@ -171,6 +209,11 @@ retried or marked complete just because a configuration file exists. Follow the
 recovery instructions below. Monitoring and checks detect known failures; only
 an actual fresh Debian 12 installation and call tests can validate the complete
 deployment in your environment.
+
+The rebuilt ISO also sets Debian Installer's link detection timeout to 30 seconds
+and DHCP timeout to 120 seconds. The default text Install path is unattended for
+the preseeded choices, but firmware/network/disk failures can still require
+intervention. It never silently selects an offline install after DHCP failure.
 
 Persistent files:
 

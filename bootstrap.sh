@@ -102,8 +102,22 @@ if [[ ! ${PLAYBOOK_REF:-} =~ ^[0-9a-f]{40}$ ]]; then
     exit 1
 fi
 
+stage 'Waiting for a network address and default route (up to 120 seconds)'
+python3 "$(dirname -- "$monitor")/wait_for_network.py" --timeout 120
+
 export DEBIAN_FRONTEND=noninteractive
 stage 'Installing bootstrap dependencies'
+# A previous run of the vendor installer may have inherited our private umask
+# and created this public keyring as 0600. Fix only this known public file before
+# apt-get update; never relax private state/log permissions or bypass signatures.
+freepbx_keyring=/etc/apt/trusted.gpg.d/freepbx.gpg
+if [[ -e $freepbx_keyring || -L $freepbx_keyring ]]; then
+    if [[ ! -f $freepbx_keyring || -L $freepbx_keyring ]]; then
+        last_error='Refusing an unexpected FreePBX public APT keyring path.'
+        exit 1
+    fi
+    chmod 0644 "$freepbx_keyring"
+fi
 echo "Installing dependencies (APT retries transient network failures)..."
 apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o APT::Update::Error-Mode=any update
 apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y ansible git curl ca-certificates

@@ -14,7 +14,7 @@ ExecStartPost=/usr/bin/systemctl --no-block reboot
 ExecStopPost=/usr/local/sbin/freepbx-install-status --service-result ${SERVICE_RESULT}
 TimeoutStartSec=infinity
 RemainAfterExit=yes
-# Bootstrap mirrors the saved logs explicitly to tty0 AND ttyS0. Sending to
+# Bootstrap mirrors the saved logs explicitly to tty1 AND ttyS0. Sending to
 # /dev/console here too would duplicate output on the primary (serial) console.
 StandardOutput=journal
 StandardError=journal
